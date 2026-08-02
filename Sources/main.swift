@@ -131,11 +131,34 @@ final class NotesStore: ObservableObject {
         }
     }
 
+    struct DeletedNote {
+        let trashURL: URL
+        let originalURL: URL
+        let title: String
+        let text: String
+    }
+    @Published var lastDeleted: DeletedNote?
+
     func delete(_ note: Note) {
-        try? FileManager.default.trashItem(at: note.url, resultingItemURL: nil)
+        var trashURL: NSURL?
+        try? FileManager.default.trashItem(at: note.url, resultingItemURL: &trashURL)
+        if let t = trashURL as URL? {
+            lastDeleted = DeletedNote(trashURL: t, originalURL: note.url, title: note.title, text: note.text)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                if self?.lastDeleted?.trashURL == t { self?.lastDeleted = nil }
+            }
+        }
         notes.removeAll { $0.id == note.id }
         if notes.isEmpty { newNote() }
         currentIndex = min(currentIndex, notes.count - 1)
+    }
+
+    func undoDelete() {
+        guard let d = lastDeleted else { return }
+        lastDeleted = nil
+        try? FileManager.default.moveItem(at: d.trashURL, to: d.originalURL)
+        notes.insert(Note(url: d.originalURL, text: d.text, lastEdited: Date()), at: 0)
+        currentIndex = 0
     }
 }
 
@@ -707,6 +730,7 @@ let relFormatter: RelativeDateTimeFormatter = {
 struct ContentView: View {
     @ObservedObject var store = NotesStore.shared
     @ObservedObject var ui = UIState.shared
+    @State private var hoveredNote: URL?
 
     var textBinding: Binding<String> {
         Binding(get: { store.current?.text ?? "" }, set: { store.update(text: $0) })
@@ -754,6 +778,13 @@ struct ContentView: View {
         guard !ui.monitorInstalled else { return }
         ui.monitorInstalled = true
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            // while the delete toast is up, ⌘Z means "un-delete", not text undo
+            if e.keyCode == 6, // z
+               e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+               NotesStore.shared.lastDeleted != nil {
+                NotesStore.shared.undoDelete()
+                return nil
+            }
             guard let kind = UIState.shared.overlay else { return e }
             let ui = UIState.shared
             let count = kind == .switcher ? filteredNotes().count : currentActions().count
@@ -841,8 +872,15 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .keyboardShortcut("p", modifiers: .command)
             Spacer()
-            Text("\(store.current?.text.count ?? 0) characters")
-                .font(.caption).foregroundStyle(.tertiary)
+            if let d = store.lastDeleted {
+                Button("Deleted “\(d.title)” — ⌘Z to undo") { store.undoDelete(); focusEditor() }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(accent)
+            } else {
+                Text("\(store.current?.text.count ?? 0) characters")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
             Button { toggleOverlay(.actions) } label: {
                 HStack(spacing: 4) { Text("Actions"); kbd("⌘"); kbd("K") }
             }
@@ -890,12 +928,26 @@ struct ContentView: View {
                             .buttonStyle(.plain)
                             .foregroundStyle(.tertiary)
                             .help("Move to Trash")
+                            .opacity(hoveredNote == note.id ? 1 : 0) // hover-only, constant layout
                         }
                         .padding(.vertical, 5).padding(.horizontal, 8)
                         .background(i == ui.selIndex ? Color.primary.opacity(0.1) : .clear,
                                     in: RoundedRectangle(cornerRadius: 6))
                         .contentShape(Rectangle())
                         .onTapGesture { store.select(note); ui.overlay = nil; focusEditor() }
+                        .onHover { h in
+                            if h { hoveredNote = note.id }
+                            else if hoveredNote == note.id { hoveredNote = nil }
+                        }
+                        .contextMenu {
+                            Button("Duplicate") { store.newNote(initial: note.text); ui.overlay = nil; focusEditor() }
+                            Button("Copy Note") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(note.text, forType: .string)
+                            }
+                            Divider()
+                            Button("Delete", role: .destructive) { store.delete(note) }
+                        }
                     }
                 }
                 .padding(6)
