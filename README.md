@@ -33,10 +33,11 @@ One Swift file, ~1000 lines, zero dependencies.
 Requires macOS 13+.
 
 ```sh
-brew install --cask --no-quarantine connect-kai/tap/noot
+brew install --cask connect-kai/tap/noot
+xattr -dr com.apple.quarantine /Applications/Noot.app
 ```
 
-(`--no-quarantine` because the app is ad-hoc signed, not notarized.)
+(The `xattr` line is needed because the app is ad-hoc signed, not notarized — Homebrew 6 removed the `--no-quarantine` flag. Right-click → Open works too.)
 
 Or build from source:
 
