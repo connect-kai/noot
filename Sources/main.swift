@@ -890,12 +890,12 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .keyboardShortcut("k", modifiers: .command)
-            hiddenShortcuts
         }
         .font(.system(size: 12))
         .foregroundStyle(.secondary)
         .padding(.horizontal, 14)
         .frame(height: 36) // fixed so the overlays can dock exactly on top
+        .background(hiddenShortcuts) // in the hierarchy for key equivalents, out of the layout
     }
 
     var hiddenShortcuts: some View {
