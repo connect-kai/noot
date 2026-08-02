@@ -18,12 +18,12 @@
 - **⌘P switcher** — search every note by title or content, arrow keys + enter
 - **⌘K actions** — new, duplicate, copy, delete (to Trash), zoom
 - **Formatting toolbar** with the shortcuts you expect (⌘B, ⌘I, ⌘E, ⌥⌘1–3…)
-- **Daily note** (⌘D) and **clipboard quick-capture** (⌥⌘C → Inbox note, without opening the panel)
-- **Images & files** — paste or drag-drop into a note; the file is copied to `~/Documents/Noot/assets/` and linked in markdown, click the link to open, ⌘Y to Quick Look
+- **Daily note** (⇧⌘D) and **clipboard quick-capture** (⌥⌘C → Inbox note, without opening the panel)
+- **Images & files** — paste or drag-drop into a note; the file is copied to `~/Noot/assets/` and linked in markdown, click the link to open, ⌘Y to Quick Look
 - **`#tags`** — highlighted in every note; click one to see all notes with that tag (or type `#tag` in ⌘P)
 - **Link paste** — paste a URL over selected text to get `[text](url)`
 - **⌘F** find bar with incremental search
-- **Plain files** — every note is a `.md` file in `~/Documents/Noot`; no database, no lock-in, syncs with whatever syncs your Documents
+- **Plain files** — every note is a `.md` file in `~/Noot`; no database, no lock-in, no permission prompts
 - Menu bar app with switchable icon, launch at login
 
 One Swift file, ~1000 lines, zero dependencies.
@@ -48,9 +48,8 @@ cd noot
 open ~/Applications/Noot.app
 ```
 
-Grant the two permissions macOS asks for:
+Grant the one permission macOS asks for:
 
-- **Documents access** — notes live in `~/Documents/Noot`
 - **Accessibility** — needed for the ⌘⌘ global double-tap (System Settings → Privacy & Security → Accessibility). ⌥⌘N works without it.
 
 ## Keys
@@ -61,7 +60,7 @@ Grant the two permissions macOS asks for:
 | ⌥⌘C | Capture clipboard to Inbox (global) |
 | ⌘P | Switch / search notes |
 | ⌘K | Actions |
-| ⌘N / ⌘D | New note / daily note |
+| ⌘N / ⇧⌘D | New note / daily note |
 | ⌘B ⌘I ⌘E ⌘⇧X | Bold, italic, code, strikethrough |
 | ⌥⌘1/2/3 | Headings |
 | ⌘⇧8 / ⌘⇧T / ⌘⇧L | Bullet / task / link |
