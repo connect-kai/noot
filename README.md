@@ -19,7 +19,10 @@
 - **⌘K actions** — new, duplicate, copy, delete (to Trash), zoom
 - **Formatting toolbar** with the shortcuts you expect (⌘B, ⌘I, ⌘E, ⌥⌘1–3…)
 - **Daily note** (⌘D) and **clipboard quick-capture** (⌥⌘C → Inbox note, without opening the panel)
-- **Images & files** — paste or drag-drop into a note; the file is copied to `~/Documents/Noot/assets/` and linked in markdown, click the link to open
+- **Images & files** — paste or drag-drop into a note; the file is copied to `~/Documents/Noot/assets/` and linked in markdown, click the link to open, ⌘Y to Quick Look
+- **`#tags`** — highlighted in every note; click one to see all notes with that tag (or type `#tag` in ⌘P)
+- **Link paste** — paste a URL over selected text to get `[text](url)`
+- **⌘F** find bar with incremental search
 - **Plain files** — every note is a `.md` file in `~/Documents/Noot`; no database, no lock-in, syncs with whatever syncs your Documents
 - Menu bar app with switchable icon, launch at login
 
@@ -28,6 +31,14 @@ One Swift file, ~1000 lines, zero dependencies.
 ## Install
 
 Requires macOS 13+.
+
+```sh
+brew install --cask --no-quarantine connect-kai/tap/noot
+```
+
+(`--no-quarantine` because the app is ad-hoc signed, not notarized.)
+
+Or build from source:
 
 ```sh
 git clone https://github.com/connect-kai/noot.git
@@ -54,6 +65,8 @@ Grant the two permissions macOS asks for:
 | ⌥⌘1/2/3 | Headings |
 | ⌘⇧8 / ⌘⇧T / ⌘⇧L | Bullet / task / link |
 | ⌘= / ⌘- | Zoom |
+| ⌘F / ⌘G | Find in note / find next |
+| ⌘Y | Quick Look attachment under caret |
 | esc / ⌘W | Hide panel |
 
 ## Hacking
