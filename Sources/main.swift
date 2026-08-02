@@ -1034,6 +1034,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var iconMenu: NSMenu!
     var axItem: NSMenuItem!
+    var updateItem: NSMenuItem!
     var hotKeyRef: EventHotKeyRef?
     var hotKeyRef2: EventHotKeyRef?
     var placed = false
@@ -1054,6 +1055,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.contentView = NSHostingView(rootView: RootView())
+        if panel.setFrameUsingName("NootPanel") { placed = true } // restore last size/position
+        panel.setFrameAutosaveName("NootPanel")
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let iconName = UserDefaults.standard.string(forKey: "statusIcon") ?? "note.text"
@@ -1091,6 +1094,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         axItem = NSMenuItem(title: "Enable ⌘⌘ (Accessibility)…", action: #selector(openAccessibilitySettings), keyEquivalent: "")
         axItem.target = self
         menu.addItem(axItem)
+        updateItem = NSMenuItem(title: "", action: #selector(updateClicked), keyEquivalent: "")
+        updateItem.target = self
+        updateItem.isHidden = true
+        menu.addItem(updateItem)
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.delegate = self
@@ -1106,7 +1113,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         installEditMenu() // key-equivalents (⌘C/⌘V/⌘Z) need a main menu even in accessory apps
         registerHotKey()
         installDoubleShift()
-        togglePanel()
+        // start hidden: the panel is summoned, it doesn't ambush — except the very first run
+        if !UserDefaults.standard.bool(forKey: "launchedBefore") {
+            UserDefaults.standard.set(true, forKey: "launchedBefore")
+            togglePanel()
+        }
+        checkForUpdates()
+        Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { [weak self] _ in
+            self?.checkForUpdates()
+        }
+    }
+
+    var installedViaBrew: Bool {
+        ["/opt/homebrew/Caskroom/noot", "/usr/local/Caskroom/noot"]
+            .contains { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    func checkForUpdates() {
+        guard let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
+              let url = URL(string: "https://api.github.com/repos/connect-kai/noot/releases/latest")
+        else { return }
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tag = json["tag_name"] as? String else { return }
+            let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+            if latest.compare(current, options: .numeric) == .orderedDescending {
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.updateItem.title = self.installedViaBrew
+                        ? "Update v\(latest) — copy brew command"
+                        : "Update v\(latest) available…"
+                    self.updateItem.isHidden = false
+                }
+            }
+        }.resume()
+    }
+
+    @objc func updateClicked() {
+        if installedViaBrew {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString("brew upgrade --cask connect-kai/tap/noot", forType: .string)
+            flashIcon()
+        } else {
+            NSWorkspace.shared.open(URL(string: "https://github.com/connect-kai/noot/releases/latest")!)
+        }
     }
 
     @objc func changeIcon(_ sender: NSMenuItem) {
