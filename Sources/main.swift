@@ -336,6 +336,8 @@ struct MarkdownEditor: NSViewRepresentable {
         tv.insertionPointColor = accentNS
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false
+        tv.usesFindBar = true
+        tv.isIncrementalSearchingEnabled = true
         tv.linkTextAttributes = [.cursor: NSCursor.pointingHand]
         tv.string = text
         gTextView = tv
@@ -1025,6 +1027,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        edit.addItem(.separator())
+        for (title, key, action) in [("Find…", "f", NSFindPanelAction.showFindPanel),
+                                     ("Find Next", "g", .next),
+                                     ("Find Previous", "G", .previous)] {
+            let item = NSMenuItem(title: title, action: #selector(NSTextView.performFindPanelAction(_:)),
+                                  keyEquivalent: key)
+            item.tag = Int(action.rawValue)
+            edit.addItem(item)
+        }
         holder.submenu = edit
         NSApp.mainMenu = main
     }
