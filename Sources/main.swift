@@ -891,7 +891,7 @@ struct ContentView: View {
         .font(.system(size: 12))
         .foregroundStyle(.secondary)
         .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .frame(height: 36) // fixed so the overlays can dock exactly on top
     }
 
     var hiddenShortcuts: some View {
@@ -1002,8 +1002,8 @@ extension View {
             .font(.system(size: 12.5))
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.1)))
-            .padding(.horizontal, 10)
-            .padding(.bottom, 42)
+            .padding(.horizontal, 6)
+            .padding(.bottom, 36) // flush against the action bar, Raycast style
     }
 }
 
