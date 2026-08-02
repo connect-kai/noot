@@ -510,6 +510,12 @@ struct MarkdownEditor: NSViewRepresentable {
 
         func textView(_ tv: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
             guard let url = link as? URL else { return false }
+            if url.scheme == "noottag" {
+                UIState.shared.query = "#" + ((url.host ?? "").removingPercentEncoding ?? "")
+                UIState.shared.selIndex = 0
+                UIState.shared.overlay = .switcher
+                return true
+            }
             if url.scheme == "fncheck", let loc = Int(url.host ?? "") {
                 let ns = tv.string as NSString
                 guard loc + 3 <= ns.length else { return true }
@@ -591,6 +597,16 @@ struct MarkdownEditor: NSViewRepresentable {
             }
             // quotes
             re("^> .*$") { m in add(m.range, [.foregroundColor: NSColor.secondaryLabelColor]) }
+            // #tags: accent, click to filter the switcher ("# " headings don't match)
+            re("(?<![\\w#])#[\\p{L}\\d_][\\p{L}\\d_\\-]*") { m in
+                var attrs: [NSAttributedString.Key: Any] = [.foregroundColor: accentNS]
+                let tag = String(ns.substring(with: m.range).dropFirst())
+                if let enc = tag.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+                   let url = URL(string: "noottag://\(enc)") {
+                    attrs[.link] = url
+                }
+                add(m.range, attrs)
+            }
             // links + file/image attachments: [text](url), ![name](assets/x.png); brackets + target hidden
             re("(!?\\[)([^\\]\\n]+)(\\]\\()([^)\\n]+)(\\))") { m in
                 add(m.range, [.foregroundColor: dim])
