@@ -265,6 +265,16 @@ final class NootTextView: NSTextView {
             insertAssets(urls)
             return
         }
+        // pasting a URL over selected text links the selection instead of replacing it
+        if selectedRange().length > 0,
+           let s = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           s.hasPrefix("http://") || s.hasPrefix("https://"),
+           !s.contains(" "), !s.contains("\n"), URL(string: s) != nil {
+            let sel = selectedRange()
+            let text = (string as NSString).substring(with: sel)
+            insertText("[\(text)](\(s))", replacementRange: sel)
+            return
+        }
         if let img = NSImage(pasteboard: pb), let tiff = img.tiffRepresentation,
            let rep = NSBitmapImageRep(data: tiff),
            let png = rep.representation(using: .png, properties: [:]) {
