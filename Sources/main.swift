@@ -402,6 +402,10 @@ struct MarkdownEditor: NSViewRepresentable {
         tv.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         scroll.documentView = tv
         scroll.hasVerticalScroller = true
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsets()
+        scroll.scrollerInsets = NSEdgeInsets()
+        scroll.scrollerStyle = .overlay // no permanent track — kills the bottom-right notch
         tv.delegate = context.coordinator
         tv.layoutManager?.delegate = context.coordinator // forces TextKit 1; needed to hide syntax glyphs
         tv.isRichText = false
