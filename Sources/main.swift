@@ -60,7 +60,7 @@ final class NotesStore: ObservableObject {
             return Note(url: $0, text: (try? String(contentsOf: $0, encoding: .utf8)) ?? "", lastEdited: mod)
         }.sorted { $0.lastEdited > $1.lastEdited }
         if notes.isEmpty {
-            newNote(initial: "# Welcome\n\nFloating notes, Raycast style.\n\n- **⌥⌘N** toggle window, `esc` hides\n- **⌘N** new note, **⌘P** search notes, **⌘K** actions\n- **⌘=** / **⌘-** zoom\n\n- [ ] click a checkbox to toggle it\n- [x] like this one\n\nFiles live in `~/Documents/Noot`.")
+            newNote(initial: "# Welcome\n\nFloating notes, Raycast style.\n\n- **⌘⌘** or **⌥⌘N** toggle window, `esc` hides\n- **⌘N** new note, **⌘P** search notes, **⌘K** actions\n- **⌘=** / **⌘-** zoom\n\n- [ ] click a checkbox to toggle it\n- [x] like this one\n\nFiles live in `~/Documents/Noot`.")
         }
     }
 

@@ -4,7 +4,7 @@
 
 <h1 align="center">Noot</h1>
 
-<p align="center">Floating markdown scratchpad for macOS, Raycast Notes style.<br>Double-tap <kbd>⇧</kbd> anywhere and start typing.</p>
+<p align="center">Floating markdown scratchpad for macOS, Raycast Notes style.<br>Double-tap <kbd>⌘</kbd> anywhere and start typing.</p>
 
 <p align="center">
   <img src="docs/screenshot.png" width="720" alt="Noot panel">
@@ -51,13 +51,13 @@ open ~/Applications/Noot.app
 Grant the two permissions macOS asks for:
 
 - **Documents access** — notes live in `~/Documents/Noot`
-- **Accessibility** — needed for the ⇧⇧ global double-tap (System Settings → Privacy & Security → Accessibility). ⌥⌘N works without it.
+- **Accessibility** — needed for the ⌘⌘ global double-tap (System Settings → Privacy & Security → Accessibility). ⌥⌘N works without it.
 
 ## Keys
 
 | Key | Action |
 |---|---|
-| ⇧⇧ or ⌥⌘N | Toggle panel (global) |
+| ⌘⌘ or ⌥⌘N | Toggle panel (global) |
 | ⌥⌘C | Capture clipboard to Inbox (global) |
 | ⌘P | Switch / search notes |
 | ⌘K | Actions |
