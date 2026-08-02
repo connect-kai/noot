@@ -26,6 +26,7 @@ struct Note: Identifiable {
 final class NotesStore: ObservableObject {
     static let shared = NotesStore()
     let dir: URL
+    var docsBlocked = false
     @Published var notes: [Note] = []
     @Published var currentIndex = 0
     @Published var fontSize: CGFloat {
@@ -52,14 +53,17 @@ final class NotesStore: ObservableObject {
                 try? FileManager.default.moveItem(at: f, to: dir.appendingPathComponent(f.lastPathComponent))
             }
         }
-        let files = ((try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
-            .filter { $0.pathExtension == "md" }
+        let listing = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.contentModificationDateKey])
+        docsBlocked = listing == nil // TCC denied — surface it instead of showing an empty list
+        let files = (listing ?? []).filter { $0.pathExtension == "md" }
         notes = files.map {
             let mod = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             return Note(url: $0, text: (try? String(contentsOf: $0, encoding: .utf8)) ?? "", lastEdited: mod)
         }.sorted { $0.lastEdited > $1.lastEdited }
-        if notes.isEmpty {
+        if docsBlocked {
+            newNote(initial: "# ⚠️ No Documents access\n\nNoot can't read `~/Documents/Noot`, so **nothing you type here will be saved**.\n\nFix: System Settings → Privacy & Security → Files & Folders → Noot → allow Documents, then relaunch Noot. The menu bar icon has a shortcut to that pane.")
+        } else if notes.isEmpty {
             newNote(initial: "# Welcome\n\nFloating notes, Raycast style.\n\n- **⌘⌘** or **⌥⌘N** toggle window, `esc` hides\n- **⌘N** new note, **⌘P** search notes, **⌘K** actions\n- **⌘=** / **⌘-** zoom\n\n- [ ] click a checkbox to toggle it\n- [x] like this one\n\nFiles live in `~/Documents/Noot`.")
         }
     }
@@ -958,6 +962,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var iconMenu: NSMenu!
     var axItem: NSMenuItem!
+    var docItem: NSMenuItem!
     var hotKeyRef: EventHotKeyRef?
     var hotKeyRef2: EventHotKeyRef?
     var placed = false
@@ -1015,6 +1020,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         axItem = NSMenuItem(title: "Enable ⌘⌘ (Accessibility)…", action: #selector(openAccessibilitySettings), keyEquivalent: "")
         axItem.target = self
         menu.addItem(axItem)
+        docItem = NSMenuItem(title: "Grant Documents Access…", action: #selector(openFilesSettings), keyEquivalent: "")
+        docItem.target = self
+        menu.addItem(docItem)
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.delegate = self
@@ -1146,11 +1154,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let trusted = AXIsProcessTrusted()
         axItem.title = trusted ? "⌘⌘ Enabled (Accessibility ✓)" : "Enable ⌘⌘ (Accessibility)…"
         axItem.state = trusted ? .on : .off
+        let docsOK = (try? FileManager.default.contentsOfDirectory(atPath: NotesStore.shared.dir.path)) != nil
+        docItem.title = docsOK ? "Documents Access ✓" : "Grant Documents Access…"
+        docItem.state = docsOK ? .on : .off
     }
 
     @objc func openAccessibilitySettings() {
         NSWorkspace.shared.open(
             URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    @objc func openFilesSettings() {
+        NSWorkspace.shared.open(
+            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")!)
     }
 
     @objc func toggleLoginItem(_ sender: NSMenuItem) {
