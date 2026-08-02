@@ -953,10 +953,11 @@ final class NotesPanel: NSPanel {
     override func cancelOperation(_ sender: Any?) { orderOut(nil) }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var panel: NotesPanel!
     var statusItem: NSStatusItem!
     var iconMenu: NSMenu!
+    var axItem: NSMenuItem!
     var hotKeyRef: EventHotKeyRef?
     var hotKeyRef2: EventHotKeyRef?
     var placed = false
@@ -1011,8 +1012,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         login.isEnabled = Bundle.main.bundleIdentifier != nil
         login.state = (Bundle.main.bundleIdentifier != nil && SMAppService.mainApp.status == .enabled) ? .on : .off
         menu.addItem(login)
+        axItem = NSMenuItem(title: "Enable ⌘⌘ (Accessibility)…", action: #selector(openAccessibilitySettings), keyEquivalent: "")
+        axItem.target = self
+        menu.addItem(axItem)
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.delegate = self
         statusItem.menu = menu
 
         // first bundled launch: enable launch-at-login once; the menu item can turn it off
@@ -1035,11 +1040,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         iconMenu.items.forEach { $0.state = ($0.representedObject as? String) == symbol ? .on : .off }
     }
 
-    // double-tap shift toggles the panel; the global monitor needs Accessibility permission
+    // double-tap command toggles the panel; the global monitor needs Accessibility permission.
+    // Never auto-prompt — the per-launch AX dialog is hostile; the menu item handles granting.
     func installDoubleShift() {
-        let trusted = AXIsProcessTrustedWithOptions(
-            [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
-        NSLog("accessibility trusted: \(trusted)")
+        NSLog("accessibility trusted: \(AXIsProcessTrusted())")
         NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] e in
             self?.handleShiftTap(e)
         }
@@ -1136,6 +1140,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showDaily() {
         NotesStore.shared.openDaily()
         if !panel.isVisible { togglePanel() } else { focusEditor() }
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        let trusted = AXIsProcessTrusted()
+        axItem.title = trusted ? "⌘⌘ Enabled (Accessibility ✓)" : "Enable ⌘⌘ (Accessibility)…"
+        axItem.state = trusted ? .on : .off
+    }
+
+    @objc func openAccessibilitySettings() {
+        NSWorkspace.shared.open(
+            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 
     @objc func toggleLoginItem(_ sender: NSMenuItem) {
