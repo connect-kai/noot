@@ -248,7 +248,66 @@ enum Fmt {
     }
 }
 
+// resolve markdown link targets: absolute URLs pass through, relative paths land in the notes dir
+func linkURL(_ s: String) -> URL? {
+    if let u = URL(string: s), u.scheme != nil { return u }
+    return URL(fileURLWithPath: s.removingPercentEncoding ?? s, relativeTo: NotesStore.shared.dir)
+}
+
 // MARK: - Markdown editor (NSTextView + regex highlighting)
+
+// text view that accepts pasted/dropped images and files, copying them into assets/
+final class NootTextView: NSTextView {
+    override func paste(_ sender: Any?) {
+        let pb = NSPasteboard.general
+        if let urls = pb.readObjects(forClasses: [NSURL.self],
+                                     options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            insertAssets(urls)
+            return
+        }
+        if let img = NSImage(pasteboard: pb), let tiff = img.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            let name = "pasted-\(Int(Date().timeIntervalSince1970)).png"
+            let dest = assetsDir().appendingPathComponent(name)
+            try? png.write(to: dest)
+            insertText("![\(name)](assets/\(name))\n", replacementRange: selectedRange())
+            return
+        }
+        super.paste(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                            options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           !urls.isEmpty {
+            insertAssets(urls)
+            return true
+        }
+        return super.performDragOperation(sender)
+    }
+
+    func assetsDir() -> URL {
+        let d = NotesStore.shared.dir.appendingPathComponent("assets")
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    func insertAssets(_ urls: [URL]) {
+        let images = ["png", "jpg", "jpeg", "gif", "heic", "webp", "tiff", "bmp"]
+        var md = ""
+        for u in urls {
+            var dest = assetsDir().appendingPathComponent(u.lastPathComponent)
+            if FileManager.default.fileExists(atPath: dest.path) {
+                dest = assetsDir().appendingPathComponent("\(Int(Date().timeIntervalSince1970))-\(u.lastPathComponent)")
+            }
+            try? FileManager.default.copyItem(at: u, to: dest)
+            let bang = images.contains(u.pathExtension.lowercased()) ? "!" : ""
+            md += "\(bang)[\(u.lastPathComponent)](assets/\(dest.lastPathComponent))\n"
+        }
+        insertText(md, replacementRange: selectedRange())
+    }
+}
 
 struct MarkdownEditor: NSViewRepresentable {
     @Binding var text: String
@@ -256,8 +315,17 @@ struct MarkdownEditor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        let tv = scroll.documentView as! NSTextView
+        let scroll = NSScrollView()
+        let tv = NootTextView()
+        tv.autoresizingMask = .width
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.minSize = .zero
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.textContainer?.widthTracksTextView = true
+        tv.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        scroll.documentView = tv
+        scroll.hasVerticalScroller = true
         tv.delegate = context.coordinator
         tv.layoutManager?.delegate = context.coordinator // forces TextKit 1; needed to hide syntax glyphs
         tv.isRichText = false
@@ -484,12 +552,12 @@ struct MarkdownEditor: NSViewRepresentable {
             }
             // quotes
             re("^> .*$") { m in add(m.range, [.foregroundColor: NSColor.secondaryLabelColor]) }
-            // links: [text](url) and bare urls; brackets + url hidden
-            re("(\\[)([^\\]\\n]+)(\\]\\()([^)\\n]+)(\\))") { m in
+            // links + file/image attachments: [text](url), ![name](assets/x.png); brackets + target hidden
+            re("(!?\\[)([^\\]\\n]+)(\\]\\()([^)\\n]+)(\\))") { m in
                 add(m.range, [.foregroundColor: dim])
                 add(m.range(at: 2), [.foregroundColor: accentNS,
                                      .underlineStyle: NSUnderlineStyle.single.rawValue])
-                if let url = URL(string: ns.substring(with: m.range(at: 4))) {
+                if let url = linkURL(ns.substring(with: m.range(at: 4))) {
                     add(m.range(at: 2), [.link: url])
                 }
                 for i in [1, 3, 4, 5] { hide.append(m.range(at: i)) }

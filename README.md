@@ -19,6 +19,7 @@
 - **⌘K actions** — new, duplicate, copy, delete (to Trash), zoom
 - **Formatting toolbar** with the shortcuts you expect (⌘B, ⌘I, ⌘E, ⌥⌘1–3…)
 - **Daily note** (⌘D) and **clipboard quick-capture** (⌥⌘C → Inbox note, without opening the panel)
+- **Images & files** — paste or drag-drop into a note; the file is copied to `~/Documents/Noot/assets/` and linked in markdown, click the link to open
 - **Plain files** — every note is a `.md` file in `~/Documents/Noot`; no database, no lock-in, syncs with whatever syncs your Documents
 - Menu bar app with switchable icon, launch at login
 
