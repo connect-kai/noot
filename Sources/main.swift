@@ -933,7 +933,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !shiftWasDown {
                 if e.timestamp - lastShiftTap < 0.35 {
                     lastShiftTap = 0
-                    DispatchQueue.main.async { self.togglePanel() }
+                    DispatchQueue.main.async { self.toggle(atMouse: true) }
                 } else {
                     lastShiftTap = e.timestamp
                 }
@@ -1014,20 +1014,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sender.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
-    @objc func togglePanel() {
+    @objc func togglePanel() { toggle(atMouse: false) }
+
+    func toggle(atMouse: Bool) {
         if panel.isVisible && panel.isKeyWindow {
             panel.orderOut(nil)
-        } else {
-            if !placed, let screen = NSScreen.main {
-                let f = screen.visibleFrame
-                let s = panel.frame.size
-                panel.setFrameOrigin(NSPoint(x: f.midX - s.width / 2,
-                                             y: f.midY - s.height / 2 + f.height * 0.12))
-                placed = true
-            }
-            panel.makeKeyAndOrderFront(nil)
-            focusEditor()
+            return
         }
+        if atMouse {
+            moveToMouse()
+            placed = true
+        } else if !placed, let screen = NSScreen.main {
+            let f = screen.visibleFrame
+            let s = panel.frame.size
+            panel.setFrameOrigin(NSPoint(x: f.midX - s.width / 2,
+                                         y: f.midY - s.height / 2 + f.height * 0.12))
+            placed = true
+        }
+        panel.makeKeyAndOrderFront(nil)
+        focusEditor()
+    }
+
+    // pop up under the cursor, clamped to that screen's visible area
+    func moveToMouse() {
+        let m = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(m, $0.frame, false) } ?? NSScreen.main
+        guard let vf = screen?.visibleFrame else { return }
+        let s = panel.frame.size
+        var origin = NSPoint(x: m.x - s.width / 2, y: m.y - s.height + 28)
+        origin.x = max(vf.minX + 8, min(origin.x, vf.maxX - s.width - 8))
+        origin.y = max(vf.minY + 8, min(origin.y, vf.maxY - s.height - 8))
+        panel.setFrameOrigin(origin)
     }
 }
 
