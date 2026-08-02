@@ -177,7 +177,7 @@ func currentActions() -> [ActionItem] {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(s.current?.text ?? "", forType: .string)
         },
-        ActionItem(id: "Delete Note", icon: "trash", keys: ["⌘", "⌫"]) {
+        ActionItem(id: "Delete Note", icon: "trash", keys: []) {
             if let n = s.current { s.delete(n) }
         },
         ActionItem(id: "Zoom In", icon: "plus.magnifyingglass", keys: ["⌘", "="]) {
@@ -862,8 +862,6 @@ struct ContentView: View {
                 .keyboardShortcut("n", modifiers: .command)
             Button("") { store.openDaily(); ui.overlay = nil; focusEditor() }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
-            Button("") { if let n = store.current { store.delete(n) } }
-                .keyboardShortcut(.delete, modifiers: .command)
             Button("") { store.fontSize = min(store.fontSize + 1, 24) }
                 .keyboardShortcut("=", modifiers: .command)
             Button("") { store.fontSize = max(store.fontSize - 1, 11) }
@@ -886,6 +884,12 @@ struct ContentView: View {
                             Spacer()
                             Text(relFormatter.localizedString(for: note.lastEdited, relativeTo: Date()))
                                 .font(.system(size: 10)).foregroundStyle(.tertiary)
+                            Button { store.delete(note) } label: {
+                                Image(systemName: "trash").font(.system(size: 10))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.tertiary)
+                            .help("Move to Trash")
                         }
                         .padding(.vertical, 5).padding(.horizontal, 8)
                         .background(i == ui.selIndex ? Color.primary.opacity(0.1) : .clear,
