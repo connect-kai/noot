@@ -982,7 +982,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let iconName = UserDefaults.standard.string(forKey: "statusIcon") ?? "note.text"
         statusItem.button?.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Noot")
         let menu = NSMenu()
-        let toggle = NSMenuItem(title: "Toggle Noot (⇧⇧ or ⌥⌘N)", action: #selector(togglePanel), keyEquivalent: "")
+        let toggle = NSMenuItem(title: "Toggle Noot (⌘⌘ or ⌥⌘N)", action: #selector(togglePanel), keyEquivalent: "")
         toggle.target = self
         menu.addItem(toggle)
         let daily = NSMenuItem(title: "Open Daily Note (⌘D)", action: #selector(showDaily), keyEquivalent: "")
@@ -1050,9 +1050,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func handleShiftTap(_ e: NSEvent) {
-        guard e.type == .flagsChanged else { lastShiftTap = 0; return } // any real key resets
+        guard e.type == .flagsChanged else { lastShiftTap = 0; return } // any real key (⌘C, ⌘D…) cancels the tap
         let flags = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == .shift {
+        if flags == .command {
             if !shiftWasDown {
                 if e.timestamp - lastShiftTap < 0.35 {
                     lastShiftTap = 0
@@ -1064,7 +1064,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             shiftWasDown = true
         } else {
             shiftWasDown = false
-            if !flags.isEmpty { lastShiftTap = 0 } // shift+cmd etc. is not a tap
+            if !flags.isEmpty { lastShiftTap = 0 } // cmd+shift etc. is not a tap
         }
     }
 
