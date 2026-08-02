@@ -2,6 +2,7 @@ import SwiftUI
 import Carbon.HIToolbox
 import ApplicationServices
 import ServiceManagement
+import Quartz
 
 let accent = Color(red: 1, green: 0.39, blue: 0.39) // raycast-ish #FF6363
 let accentNS = NSColor(red: 1, green: 0.39, blue: 0.39, alpha: 1)
@@ -256,8 +257,34 @@ func linkURL(_ s: String) -> URL? {
 
 // MARK: - Markdown editor (NSTextView + regex highlighting)
 
+final class QuickLooker: NSObject, QLPreviewPanelDataSource {
+    static let shared = QuickLooker()
+    var url: URL?
+    func show(_ u: URL) {
+        url = u
+        guard let panel = QLPreviewPanel.shared() else { return }
+        panel.dataSource = self
+        panel.reloadData()
+        panel.makeKeyAndOrderFront(nil)
+    }
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { url == nil ? 0 : 1 }
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! { url! as NSURL }
+}
+
 // text view that accepts pasted/dropped images and files, copying them into assets/
 final class NootTextView: NSTextView {
+    // ⌘Y: Quick Look the file link under the caret
+    @objc func quickLookLink(_ sender: Any?) {
+        guard let storage = textStorage, storage.length > 0 else { return }
+        let idx = min(selectedRange().location, storage.length - 1)
+        for i in [idx, max(idx - 1, 0)] {
+            if let link = storage.attribute(.link, at: i, effectiveRange: nil) as? URL, link.isFileURL {
+                QuickLooker.shared.show(link)
+                return
+            }
+        }
+    }
+
     override func paste(_ sender: Any?) {
         let pb = NSPasteboard.general
         if let urls = pb.readObjects(forClasses: [NSURL.self],
@@ -1046,6 +1073,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.tag = Int(action.rawValue)
             edit.addItem(item)
         }
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Quick Look", action: #selector(NootTextView.quickLookLink(_:)), keyEquivalent: "y")
         holder.submenu = edit
         NSApp.mainMenu = main
     }
