@@ -118,7 +118,6 @@ struct OpeningShortcut: Equatable {
         case kVK_ANSI_Period: return "."
         case kVK_ANSI_Grave: return String(UnicodeScalar(96))
         case kVK_Space: return "Space"
-        case kVK_Return: return "↩"
         case kVK_Tab: return "⇥"
         case kVK_Escape: return "Esc"
         case kVK_Delete: return "⌫"
@@ -1374,10 +1373,11 @@ final class ShortcutRecorderView: NSView {
     }
 }
 
-final class ShortcutRecorderController: NSWindowController {
+final class ShortcutRecorderController: NSWindowController, NSWindowDelegate {
     private let recorder = ShortcutRecorderView(frame: .zero)
     private let saveButton = NSButton(title: "Save", target: nil, action: nil)
     private let onSave: (OpeningShortcut) -> Bool
+    var onClose: (() -> Void)?
 
     init(current: OpeningShortcut, onSave: @escaping (OpeningShortcut) -> Bool) {
         self.onSave = onSave
@@ -1389,6 +1389,7 @@ final class ShortcutRecorderController: NSWindowController {
         super.init(window: window)
         window.title = "Opening Shortcut"
         window.isReleasedWhenClosed = false
+        window.delegate = self // catches the close button too, not just Cancel/Esc
 
         let instruction = NSTextField(labelWithString: "Press the shortcut that should open Noot.")
         instruction.font = .systemFont(ofSize: 13, weight: .medium)
@@ -1445,6 +1446,8 @@ final class ShortcutRecorderController: NSWindowController {
         guard let shortcut = recorder.shortcut, onSave(shortcut) else { return }
         close()
     }
+
+    func windowWillClose(_ notification: Notification) { onClose?() }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -1488,6 +1491,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if panel.setFrameUsingName("NootPanel") { placed = true } // restore last size/position
         panel.setFrameAutosaveName("NootPanel")
 
+        // first bundled launch: enable open-at-login once; the menu item can turn it off
+        if Bundle.main.bundleIdentifier != nil, !UserDefaults.standard.bool(forKey: "didAutoLogin") {
+            UserDefaults.standard.set(true, forKey: "didAutoLogin")
+            try? SMAppService.mainApp.register()
+        }
+
         if prefersMenuBarIcon { setMenuBarVisible(true, persist: false) }
         installEditMenu() // key-equivalents (⌘C/⌘V/⌘Z) need a main menu even in accessory apps
         installHotKeys()
@@ -1529,6 +1538,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func makeStatusMenu() -> NSMenu {
         let menu = NSMenu()
+        menu.autoenablesItems = false // refreshMenu owns isEnabled; auto-validation would undo it
 
         let toggle = NSMenuItem(
             title: "Open Noot (⌘⌘ or \(openingShortcut.displayName))",
@@ -1797,7 +1807,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if openingStatus != noErr {
             NSLog("Could not register opening shortcut \(openingShortcut.displayName): \(openingStatus)")
             openingShortcutsEnabled = false
-            setMenuBarVisible(true)
+            // rescue only: don't overwrite a saved "hidden" choice, and put the
+            // icon away again once the shortcut is working
+            if !isMenuBarVisible {
+                setMenuBarVisible(true, persist: false)
+                menuBarShownForShortcutPause = true
+            }
             updateShortcutMenu()
         }
 
@@ -1849,9 +1864,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func showShortcutRecorder() {
+        // reuse the open window: a second controller would orphan the first one
+        if let existing = shortcutRecorderController {
+            existing.showWindow(nil)
+            return
+        }
         let controller = ShortcutRecorderController(current: openingShortcut) { [weak self] shortcut in
             self?.applyOpeningShortcut(shortcut) ?? false
         }
+        controller.onClose = { [weak self] in self?.shortcutRecorderController = nil }
         shortcutRecorderController = controller
         controller.showWindow(nil)
     }
@@ -1870,7 +1891,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard status == noErr else {
             showAlert(
                 title: "Shortcut unavailable",
-                message: "\(shortcut.displayName) is already in use by macOS or another app. Press a different shortcut.")
+                message: "Noot could not register \(shortcut.displayName). It may be reserved by macOS or already used by Noot. Press a different shortcut.")
             return false
         }
 
@@ -1897,7 +1918,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard status == noErr else {
                 showAlert(
                     title: "Shortcut unavailable",
-                    message: "\(openingShortcut.displayName) is now in use by macOS or another app. Choose a different opening shortcut.")
+                    message: "Noot could not re-register \(openingShortcut.displayName). Choose a different opening shortcut.")
                 return
             }
             openingShortcutsEnabled = true
