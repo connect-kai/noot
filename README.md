@@ -24,9 +24,9 @@
 - **Link paste** — paste a URL over selected text to get `[text](url)`
 - **⌘F** find bar with incremental search
 - **Plain files** — every note is a `.md` file in `~/Noot`; no database, no lock-in, no permission prompts
-- Menu bar app with switchable icon, launch at login
+- Menu bar controls for a configurable opening shortcut, a temporary shortcut pause, icon visibility, and open at login
 
-One Swift file, ~1000 lines, zero dependencies.
+One Swift file, ~2000 lines, zero dependencies.
 
 ## Install
 
@@ -56,7 +56,7 @@ Grant the one permission macOS asks for:
 
 | Key | Action |
 |---|---|
-| ⌘⌘ or ⌥⌘N | Toggle panel (global) |
+| ⌘⌘ or configurable shortcut (defaults to ⌥⌘N) | Toggle panel (global) |
 | ⌥⌘C | Capture clipboard to Inbox (global) |
 | ⌘P | Switch / search notes |
 | ⌘K | Actions |
@@ -68,6 +68,11 @@ Grant the one permission macOS asks for:
 | ⌘F / ⌘G | Find in note / find next |
 | ⌘Y | Quick Look attachment under caret |
 | esc / ⌘W | Hide panel |
+
+The menu-bar menu can record a different opening shortcut or pause all opening
+shortcuts until Noot quits. “Show in Menu Bar” and “Open at Login” are saved
+choices. If you hide the menu-bar icon, open Noot and right-click its top
+toolbar to reopen the same menu and restore it.
 
 ## Hacking
 
