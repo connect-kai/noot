@@ -1473,6 +1473,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return defaults.bool(forKey: "showInMenuBar")
     }
 
+    // A double tap has no key, only a modifier, so a fixed list beats a recorder.
+    static let doubleTapChoices: [(id: String, label: String, flag: NSEvent.ModifierFlags?)] = [
+        ("command", "⌘⌘", .command),
+        ("option", "⌥⌥", .option),
+        ("control", "⌃⌃", .control),
+        ("shift", "⇧⇧", .shift),
+        ("off", "Off", nil),
+    ]
+
+    var doubleTapChoice: (id: String, label: String, flag: NSEvent.ModifierFlags?) {
+        let saved = UserDefaults.standard.string(forKey: "doubleTapModifier") ?? "command"
+        return Self.doubleTapChoices.first { $0.id == saved } ?? Self.doubleTapChoices[0]
+    }
+
+    var openTitle: String {
+        let tap = doubleTapChoice.flag == nil ? "" : "\(doubleTapChoice.label) or "
+        return "Open Noot (\(tap)\(openingShortcut.displayName))"
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         panel = NotesPanel(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 480),
@@ -1541,7 +1560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.autoenablesItems = false // refreshMenu owns isEnabled; auto-validation would undo it
 
         let toggle = NSMenuItem(
-            title: "Open Noot (⌘⌘ or \(openingShortcut.displayName))",
+            title: openTitle,
             action: #selector(togglePanel),
             keyEquivalent: "")
         toggle.target = self
@@ -1562,6 +1581,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         openingShortcuts.target = self
         openingShortcuts.toolTip = "This pause lasts until Noot quits"
         menu.addItem(openingShortcuts)
+
+        let doubleTapItem = NSMenuItem(title: "Double-Tap to Open", action: nil, keyEquivalent: "")
+        let doubleTaps = NSMenu(title: "Double-Tap to Open")
+        for choice in Self.doubleTapChoices {
+            let item = NSMenuItem(title: choice.label, action: #selector(changeDoubleTap(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = choice.id
+            doubleTaps.addItem(item)
+        }
+        doubleTapItem.submenu = doubleTaps
+        menu.addItem(doubleTapItem)
 
         let shortcut = NSMenuItem(
             title: "Change Opening Shortcut… (\(openingShortcut.displayName))",
@@ -1629,10 +1659,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.items.first { $0.action == action }
     }
 
+    func submenu(in menu: NSMenu, titled title: String) -> NSMenu? {
+        menu.items.compactMap(\.submenu).first { $0.title == title }
+    }
+
+    @objc func changeDoubleTap(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(id, forKey: "doubleTapModifier")
+        lastShiftTap = 0 // drop any half-finished tap on the old modifier
+        shiftWasDown = false
+        sender.menu?.items.forEach { $0.state = ($0.representedObject as? String) == id ? .on : .off }
+        updateShortcutMenu()
+    }
+
     func refreshMenu(_ menu: NSMenu) {
         let trusted = AXIsProcessTrusted()
-        menuItem(in: menu, action: #selector(togglePanel))?.title =
-            "Open Noot (⌘⌘ or \(openingShortcut.displayName))"
+        menuItem(in: menu, action: #selector(togglePanel))?.title = openTitle
 
         let opening = menuItem(in: menu, action: #selector(toggleOpeningShortcuts))
         opening?.state = openingShortcutsEnabled ? .on : .off
@@ -1641,7 +1683,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "Change Opening Shortcut… (\(openingShortcut.displayName))"
 
         let accessibility = menuItem(in: menu, action: #selector(openAccessibilitySettings))
-        accessibility?.title = trusted ? "⌘⌘ Enabled (Accessibility ✓)" : "Enable ⌘⌘ (Accessibility)…"
+        let tap = doubleTapChoice.flag == nil ? "" : "\(doubleTapChoice.label) "
+        accessibility?.title = trusted ? "\(tap)Accessibility ✓" : "Enable \(tap)(Accessibility)…"
         accessibility?.state = trusted ? .on : .off
 
         let showMenuBar = menuItem(in: menu, action: #selector(toggleMenuBarItem))
@@ -1653,9 +1696,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         login?.state =
             (Bundle.main.bundleIdentifier != nil && SMAppService.mainApp.status == .enabled) ? .on : .off
 
+        // scoped by submenu title: both submenus use String representedObjects
         let iconName = UserDefaults.standard.string(forKey: "statusIcon") ?? "note.text"
-        menu.items.compactMap(\.submenu).flatMap(\.items).forEach {
-            if let symbol = $0.representedObject as? String { $0.state = symbol == iconName ? .on : .off }
+        submenu(in: menu, titled: "Icon")?.items.forEach {
+            $0.state = ($0.representedObject as? String) == iconName ? .on : .off
+        }
+        let tapID = doubleTapChoice.id
+        submenu(in: menu, titled: "Double-Tap to Open")?.items.forEach {
+            $0.state = ($0.representedObject as? String) == tapID ? .on : .off
         }
 
         let update = menuItem(in: menu, action: #selector(updateClicked))
@@ -1739,9 +1787,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             shiftWasDown = false
             return
         }
+        guard let target = doubleTapChoice.flag else { lastShiftTap = 0; shiftWasDown = false; return }
         guard e.type == .flagsChanged else { lastShiftTap = 0; return } // any real key (⌘C, ⌘D…) cancels the tap
         let flags = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == .command {
+        if flags == target {
             if !shiftWasDown {
                 if e.timestamp - lastShiftTap < 0.35 {
                     lastShiftTap = 0

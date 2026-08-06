@@ -50,13 +50,13 @@ open ~/Applications/Noot.app
 
 Grant the one permission macOS asks for:
 
-- **Accessibility** — needed for the ⌘⌘ global double-tap (System Settings → Privacy & Security → Accessibility). ⌥⌘N works without it.
+- **Accessibility** — needed for the global double-tap (System Settings → Privacy & Security → Accessibility). ⌥⌘N works without it.
 
 ## Keys
 
 | Key | Action |
 |---|---|
-| ⌘⌘ or configurable shortcut (defaults to ⌥⌘N) | Toggle panel (global) |
+| double-tap (defaults to ⌘⌘) or configurable shortcut (defaults to ⌥⌘N) | Toggle panel (global) |
 | ⌥⌘C | Capture clipboard to Inbox (global) |
 | ⌘P | Switch / search notes |
 | ⌘K | Actions |
@@ -69,8 +69,8 @@ Grant the one permission macOS asks for:
 | ⌘Y | Quick Look attachment under caret |
 | esc / ⌘W | Hide panel |
 
-The menu-bar menu can record a different opening shortcut or pause all opening
-shortcuts until Noot quits. “Show in Menu Bar” and “Open at Login” are saved
+The menu-bar menu can record a different opening shortcut, switch the double-tap
+modifier (⌘⌘, ⌥⌥, ⌃⌃, ⇧⇧, or off), or pause all opening shortcuts until Noot quits. “Show in Menu Bar” and “Open at Login” are saved
 choices. If you hide the menu-bar icon, open Noot and right-click its top
 toolbar to reopen the same menu and restore it.
 
