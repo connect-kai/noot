@@ -1635,6 +1635,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         iconItem.submenu = icons
         menu.addItem(iconItem)
 
+        let autoUp = NSMenuItem(title: "Auto-Update", action: #selector(toggleAutoUpdate(_:)), keyEquivalent: "")
+        autoUp.target = self
+        menu.addItem(autoUp)
+
         let update = NSMenuItem(
             title: availableUpdateTitle ?? "",
             action: #selector(updateClicked),
@@ -1709,6 +1713,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let update = menuItem(in: menu, action: #selector(updateClicked))
         update?.title = availableUpdateTitle ?? ""
         update?.isHidden = availableUpdateTitle == nil
+        menuItem(in: menu, action: #selector(toggleAutoUpdate(_:)))?.state = autoUpdateEnabled ? .on : .off
+    }
+
+    var autoUpdateEnabled: Bool {
+        UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true
+    }
+
+    @objc func toggleAutoUpdate(_ sender: NSMenuItem) {
+        UserDefaults.standard.set(!autoUpdateEnabled, forKey: "autoUpdate")
+        sender.state = autoUpdateEnabled ? .on : .off
     }
 
     var installedViaBrew: Bool {
@@ -1728,13 +1742,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if latest.compare(current, options: .numeric) == .orderedDescending {
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    self.availableUpdateTitle = self.installedViaBrew
-                        ? "Update v\(latest) — copy brew command"
-                        : "Update v\(latest) available…"
-                    if let menu = self.statusItem?.menu { self.refreshMenu(menu) }
+                    if self.autoUpdateEnabled {
+                        self.autoUpdate(to: latest)
+                    } else {
+                        self.availableUpdateTitle = self.installedViaBrew
+                            ? "Update v\(latest) — copy brew command"
+                            : "Update v\(latest) available…"
+                        if let menu = self.statusItem?.menu { self.refreshMenu(menu) }
+                    }
                 }
             }
         }.resume()
+    }
+
+    var updating = false
+
+    func autoUpdate(to version: String) {
+        guard !updating else { return }
+        updating = true
+        availableUpdateTitle = "Updating to v\(version)…"
+        if let menu = statusItem?.menu { refreshMenu(menu) }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let ok = self.installedViaBrew ? self.brewUpgrade() : self.selfReplace(version)
+            DispatchQueue.main.async {
+                if ok {
+                    self.relaunch()
+                } else {
+                    self.updating = false
+                    self.availableUpdateTitle = self.installedViaBrew
+                        ? "Update v\(version) — copy brew command"
+                        : "Update v\(version) available…"
+                    if let menu = self.statusItem?.menu { self.refreshMenu(menu) }
+                }
+            }
+        }
+    }
+
+    func brewUpgrade() -> Bool {
+        guard let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+            .first(where: { FileManager.default.fileExists(atPath: $0) }) else { return false }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: brew)
+        p.arguments = ["upgrade", "--cask", "connect-kai/tap/noot"]
+        guard (try? p.run()) != nil else { return false }
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return false }
+        // Homebrew 6 quarantines the fresh install; strip it or the relaunch trips Gatekeeper
+        let x = Process()
+        x.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        x.arguments = ["-dr", "com.apple.quarantine", Bundle.main.bundlePath]
+        try? x.run()
+        x.waitUntilExit()
+        return true
+    }
+
+    // manual installs: download the release zip and swap our own bundle
+    func selfReplace(_ version: String) -> Bool {
+        guard let url = URL(string: "https://github.com/connect-kai/noot/releases/download/v\(version)/Noot-\(version).zip"),
+              let data = try? Data(contentsOf: url) else { return false }
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("noot-\(version)")
+        try? FileManager.default.removeItem(at: tmp)
+        try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let zip = tmp.appendingPathComponent("noot.zip")
+        guard (try? data.write(to: zip)) != nil else { return false }
+        let unzip = Process()
+        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        unzip.arguments = ["-x", "-k", zip.path, tmp.path]
+        guard (try? unzip.run()) != nil else { return false }
+        unzip.waitUntilExit()
+        let newApp = tmp.appendingPathComponent("Noot.app")
+        guard unzip.terminationStatus == 0,
+              FileManager.default.fileExists(atPath: newApp.appendingPathComponent("Contents/MacOS/Noot").path)
+        else { return false }
+        let current = Bundle.main.bundleURL
+        do {
+            try FileManager.default.trashItem(at: current, resultingItemURL: nil)
+            try FileManager.default.moveItem(at: newApp, to: current)
+            return true
+        } catch { return false }
+    }
+
+    func relaunch() {
+        let sh = Process()
+        sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+        sh.arguments = ["-c", "sleep 1; /usr/bin/open \"\(Bundle.main.bundlePath)\""]
+        try? sh.run()
+        NSApp.terminate(nil)
     }
 
     @objc func updateClicked() {

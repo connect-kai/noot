@@ -25,6 +25,7 @@
 - **⌘F** find bar with incremental search
 - **Plain files** — every note is a `.md` file in `~/Noot`; no database, no lock-in, no permission prompts
 - Menu bar controls for a configurable opening shortcut, a temporary shortcut pause, icon visibility, and open at login
+- **Auto-update** — checks GitHub daily and upgrades itself (via `brew upgrade` for brew installs); toggle off in the menu
 
 One Swift file, ~2000 lines, zero dependencies.
 
