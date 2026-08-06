@@ -1,0 +1,44 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build app bundle
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Info.plist
+          ./build-app.sh
+          ditto -c -k --keepParent "$HOME/Applications/Noot.app" "Noot-$VERSION.zip"
+          shasum -a 256 "Noot-$VERSION.zip" | awk '{print $1}' > sha256.txt
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" "Noot-$VERSION.zip" \
+            --title "Noot $VERSION" --generate-notes
+
+      - name: Bump Homebrew cask
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA=$(cat sha256.txt)
+          mkdir -p ~/.ssh
+          echo "${{ secrets.TAP_DEPLOY_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          git clone git@github.com:connect-kai/homebrew-tap.git
+          cd homebrew-tap
+          sed -i '' -E "s/version \"[0-9.]+\"/version \"$VERSION\"/" Casks/noot.rb
+          sed -i '' -E "s/sha256 \"[a-f0-9]+\"/sha256 \"$SHA\"/" Casks/noot.rb
+          git config user.name "noot-release"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -am "noot $VERSION"
+          git push
