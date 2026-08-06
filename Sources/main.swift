@@ -8,6 +8,153 @@ let accent = Color(red: 1, green: 0.39, blue: 0.39) // raycast-ish #FF6363
 let accentNS = NSColor(red: 1, green: 0.39, blue: 0.39, alpha: 1)
 weak var gTextView: NSTextView?
 
+// The opening shortcut is stored as Carbon values because Carbon is still the
+// macOS API for registering a system-wide hotkey. Keeping the display label as
+// part of the preference means less-common keys remain readable after relaunch.
+struct OpeningShortcut: Equatable {
+    let keyCode: UInt32
+    let modifiers: UInt32
+    let keyLabel: String
+
+    static let defaultValue = OpeningShortcut(
+        keyCode: UInt32(kVK_ANSI_N),
+        modifiers: UInt32(cmdKey | optionKey),
+        keyLabel: "N")
+
+    static var saved: OpeningShortcut {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: "openingShortcutKeyCode") != nil,
+              defaults.object(forKey: "openingShortcutModifiers") != nil,
+              let label = defaults.string(forKey: "openingShortcutKeyLabel"),
+              !label.isEmpty else { return .defaultValue }
+        let shortcut = OpeningShortcut(
+            keyCode: UInt32(defaults.integer(forKey: "openingShortcutKeyCode")),
+            modifiers: UInt32(defaults.integer(forKey: "openingShortcutModifiers")),
+            keyLabel: label)
+        return shortcut.hasRequiredModifier ? shortcut : .defaultValue
+    }
+
+    var hasRequiredModifier: Bool {
+        modifiers & UInt32(cmdKey | optionKey | controlKey) != 0
+    }
+
+    var displayName: String {
+        var result = ""
+        if modifiers & UInt32(controlKey) != 0 { result += "⌃" }
+        if modifiers & UInt32(optionKey) != 0 { result += "⌥" }
+        if modifiers & UInt32(shiftKey) != 0 { result += "⇧" }
+        if modifiers & UInt32(cmdKey) != 0 { result += "⌘" }
+        return result + keyLabel
+    }
+
+    func save() {
+        let defaults = UserDefaults.standard
+        defaults.set(Int(keyCode), forKey: "openingShortcutKeyCode")
+        defaults.set(Int(modifiers), forKey: "openingShortcutModifiers")
+        defaults.set(keyLabel, forKey: "openingShortcutKeyLabel")
+    }
+
+    static func from(_ event: NSEvent) -> OpeningShortcut? {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        var modifiers: UInt32 = 0
+        if flags.contains(.control) { modifiers |= UInt32(controlKey) }
+        if flags.contains(.option) { modifiers |= UInt32(optionKey) }
+        if flags.contains(.shift) { modifiers |= UInt32(shiftKey) }
+        if flags.contains(.command) { modifiers |= UInt32(cmdKey) }
+        let shortcut = OpeningShortcut(
+            keyCode: UInt32(event.keyCode),
+            modifiers: modifiers,
+            keyLabel: label(for: Int(event.keyCode)))
+        return shortcut.hasRequiredModifier ? shortcut : nil
+    }
+
+    private static func label(for keyCode: Int) -> String {
+        switch keyCode {
+        case kVK_ANSI_A: return "A"
+        case kVK_ANSI_B: return "B"
+        case kVK_ANSI_C: return "C"
+        case kVK_ANSI_D: return "D"
+        case kVK_ANSI_E: return "E"
+        case kVK_ANSI_F: return "F"
+        case kVK_ANSI_G: return "G"
+        case kVK_ANSI_H: return "H"
+        case kVK_ANSI_I: return "I"
+        case kVK_ANSI_J: return "J"
+        case kVK_ANSI_K: return "K"
+        case kVK_ANSI_L: return "L"
+        case kVK_ANSI_M: return "M"
+        case kVK_ANSI_N: return "N"
+        case kVK_ANSI_O: return "O"
+        case kVK_ANSI_P: return "P"
+        case kVK_ANSI_Q: return "Q"
+        case kVK_ANSI_R: return "R"
+        case kVK_ANSI_S: return "S"
+        case kVK_ANSI_T: return "T"
+        case kVK_ANSI_U: return "U"
+        case kVK_ANSI_V: return "V"
+        case kVK_ANSI_W: return "W"
+        case kVK_ANSI_X: return "X"
+        case kVK_ANSI_Y: return "Y"
+        case kVK_ANSI_Z: return "Z"
+        case kVK_ANSI_0: return "0"
+        case kVK_ANSI_1: return "1"
+        case kVK_ANSI_2: return "2"
+        case kVK_ANSI_3: return "3"
+        case kVK_ANSI_4: return "4"
+        case kVK_ANSI_5: return "5"
+        case kVK_ANSI_6: return "6"
+        case kVK_ANSI_7: return "7"
+        case kVK_ANSI_8: return "8"
+        case kVK_ANSI_9: return "9"
+        case kVK_ANSI_Equal: return "="
+        case kVK_ANSI_Minus: return "-"
+        case kVK_ANSI_LeftBracket: return "["
+        case kVK_ANSI_RightBracket: return "]"
+        case kVK_ANSI_Quote: return "'"
+        case kVK_ANSI_Semicolon: return ";"
+        case kVK_ANSI_Backslash: return "\\"
+        case kVK_ANSI_Comma: return ","
+        case kVK_ANSI_Slash: return "/"
+        case kVK_ANSI_Period: return "."
+        case kVK_ANSI_Grave: return String(UnicodeScalar(96))
+        case kVK_Space: return "Space"
+        case kVK_Tab: return "⇥"
+        case kVK_Escape: return "Esc"
+        case kVK_Delete: return "⌫"
+        case kVK_ForwardDelete: return "⌦"
+        case kVK_Home: return "Home"
+        case kVK_End: return "End"
+        case kVK_PageUp: return "Page Up"
+        case kVK_PageDown: return "Page Down"
+        case kVK_LeftArrow: return "←"
+        case kVK_RightArrow: return "→"
+        case kVK_UpArrow: return "↑"
+        case kVK_DownArrow: return "↓"
+        case kVK_F1: return "F1"
+        case kVK_F2: return "F2"
+        case kVK_F3: return "F3"
+        case kVK_F4: return "F4"
+        case kVK_F5: return "F5"
+        case kVK_F6: return "F6"
+        case kVK_F7: return "F7"
+        case kVK_F8: return "F8"
+        case kVK_F9: return "F9"
+        case kVK_F10: return "F10"
+        case kVK_F11: return "F11"
+        case kVK_F12: return "F12"
+        case kVK_F13: return "F13"
+        case kVK_F14: return "F14"
+        case kVK_F15: return "F15"
+        case kVK_F16: return "F16"
+        case kVK_F17: return "F17"
+        case kVK_F18: return "F18"
+        case kVK_F19: return "F19"
+        case kVK_F20: return "F20"
+        default: return "Key " + String(keyCode)
+        }
+    }
+}
+
 // MARK: - Store
 
 struct Note: Identifiable {
@@ -708,14 +855,121 @@ struct MarkdownEditor: NSViewRepresentable {
 // MARK: - UI
 
 struct VisualEffect: NSViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
-        v.material = .hudWindow
         v.blendingMode = .behindWindow
         v.state = .active
+        updateNSView(v, context: context)
         return v
     }
-    func updateNSView(_: NSVisualEffectView, context: Context) {}
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        // HUD material is intentionally dark. Use an appearance-aware material
+        // in light mode so the glass does not turn into a muddy grey sheet.
+        view.material = colorScheme == .light ? .underWindowBackground : .hudWindow
+    }
+}
+
+final class ResizeHandleView: NSView {
+    private var startingFrame: NSRect?
+    private var startingMouse: NSPoint?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        toolTip = "Drag to resize"
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Resize Noot")
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .crosshair)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        startingFrame = window.frame
+        startingMouse = NSEvent.mouseLocation
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window, let startingFrame, let startingMouse else { return }
+        let mouse = NSEvent.mouseLocation
+        let width = max(window.minSize.width, startingFrame.width + mouse.x - startingMouse.x)
+        let height = max(window.minSize.height, startingFrame.height + startingMouse.y - mouse.y)
+        let frame = NSRect(x: startingFrame.minX,
+                           y: startingFrame.maxY - height,
+                           width: width,
+                           height: height)
+        window.setFrame(frame, display: true)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        startingFrame = nil
+        startingMouse = nil
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        NSColor.secondaryLabelColor.withAlphaComponent(0.6).setStroke()
+        for inset in [7.0, 12.0, 17.0] {
+            let path = NSBezierPath()
+            path.lineWidth = 1.5
+            path.lineCapStyle = .round
+            path.move(to: NSPoint(x: bounds.maxX - inset, y: 5))
+            path.line(to: NSPoint(x: bounds.maxX - 5, y: inset))
+            path.stroke()
+        }
+    }
+}
+
+struct ResizeHandle: NSViewRepresentable {
+    func makeNSView(context: Context) -> ResizeHandleView { ResizeHandleView() }
+    func updateNSView(_ nsView: ResizeHandleView, context: Context) {}
+}
+
+final class HeaderMenuView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityElement(false)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // The transparent overlay should never interfere with formatting buttons.
+    // It participates in hit-testing only for right-click or Control-click.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point), let event = NSApp.currentEvent else { return nil }
+        if event.type == .rightMouseDown ||
+            (event.type == .leftMouseDown && event.modifierFlags.contains(.control)) {
+            return self
+        }
+        return nil
+    }
+
+    override func rightMouseDown(with event: NSEvent) { showMenu(with: event) }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) {
+            showMenu(with: event)
+        } else {
+            super.mouseDown(with: event)
+        }
+    }
+
+    private func showMenu(with event: NSEvent) {
+        guard let delegate = NSApp.delegate as? AppDelegate else { return }
+        NSMenu.popUpContextMenu(delegate.makeStatusMenu(), with: event, for: self)
+    }
+}
+
+struct HeaderMenuPresenter: NSViewRepresentable {
+    func makeNSView(context: Context) -> HeaderMenuView { HeaderMenuView() }
+    func updateNSView(_ nsView: HeaderMenuView, context: Context) {}
 }
 
 func kbd(_ s: String) -> some View {
@@ -863,6 +1117,7 @@ struct ContentView: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
+        .overlay(HeaderMenuPresenter())
     }
 
     var bottomBar: some View {
@@ -894,6 +1149,7 @@ struct ContentView: View {
         .font(.system(size: 12))
         .foregroundStyle(.secondary)
         .padding(.horizontal, 14)
+        .padding(.trailing, 24) // keep Actions clear of the larger resize target
         .frame(height: 36) // fixed so the overlays can dock exactly on top
         .background(hiddenShortcuts) // in the hierarchy for key equivalents, out of the layout
     }
@@ -1000,24 +1256,44 @@ struct SearchField: View {
     }
 }
 
-extension View {
-    func overlayChrome() -> some View {
-        self
+struct OverlayChrome: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
             .font(.system(size: 12.5))
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.1)))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.primary.opacity(colorScheme == .light ? 0.16 : 0.1)))
             .padding(.horizontal, 6)
             .padding(.bottom, 36) // flush against the action bar, Raycast style
     }
 }
 
+extension View {
+    func overlayChrome() -> some View { modifier(OverlayChrome()) }
+}
+
 struct RootView: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
-        ContentView()
-            .background(VisualEffect())
+        ZStack(alignment: .bottomTrailing) {
+            ContentView()
+            ResizeHandle()
+                .frame(width: 40, height: 40)
+        }
+            .background {
+                ZStack {
+                    VisualEffect()
+                    // Light glass needs a little body to keep text readable on
+                    // pale windows; dark mode keeps the existing HUD look.
+                    if colorScheme == .light { Color.white.opacity(0.38) }
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(.white.opacity(0.12)))
+                .strokeBorder(Color.primary.opacity(colorScheme == .light ? 0.16 : 0.12)))
             .ignoresSafeArea()
     }
 }
@@ -1029,17 +1305,192 @@ final class NotesPanel: NSPanel {
     override func cancelOperation(_ sender: Any?) { orderOut(nil) }
 }
 
+final class ShortcutRecorderView: NSView {
+    var shortcut: OpeningShortcut? { didSet { needsDisplay = true } }
+    var onShortcutChanged: ((OpeningShortcut) -> Void)?
+    var onCancel: (() -> Void)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        toolTip = "Press the shortcut you want to use"
+        setAccessibilityElement(true)
+        setAccessibilityRole(.textField)
+        setAccessibilityLabel("Opening shortcut")
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func becomeFirstResponder() -> Bool {
+        needsDisplay = true
+        return true
+    }
+
+    override func resignFirstResponder() -> Bool {
+        needsDisplay = true
+        return true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.keyCode == UInt16(kVK_Escape),
+           flags.intersection([.command, .option, .control, .shift]).isEmpty {
+            onCancel?()
+            return
+        }
+        guard let shortcut = OpeningShortcut.from(event) else {
+            NSSound.beep()
+            return
+        }
+        self.shortcut = shortcut
+        setAccessibilityValue(shortcut.displayName)
+        onShortcutChanged?(shortcut)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.75, dy: 0.75), xRadius: 8, yRadius: 8)
+        NSColor.controlBackgroundColor.setFill()
+        shape.fill()
+        ((window?.firstResponder === self) ? accentNS : NSColor.separatorColor).setStroke()
+        shape.lineWidth = window?.firstResponder === self ? 2 : 1
+        shape.stroke()
+
+        let text = shortcut?.displayName ?? "Type a shortcut"
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 18, weight: .medium),
+            .foregroundColor: NSColor.labelColor,
+        ]
+        let size = (text as NSString).size(withAttributes: attributes)
+        (text as NSString).draw(
+            at: NSPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2),
+            withAttributes: attributes)
+    }
+}
+
+final class ShortcutRecorderController: NSWindowController, NSWindowDelegate {
+    private let recorder = ShortcutRecorderView(frame: .zero)
+    private let saveButton = NSButton(title: "Save", target: nil, action: nil)
+    private let onSave: (OpeningShortcut) -> Bool
+    var onClose: (() -> Void)?
+
+    init(current: OpeningShortcut, onSave: @escaping (OpeningShortcut) -> Bool) {
+        self.onSave = onSave
+        let window = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 190),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false)
+        super.init(window: window)
+        window.title = "Opening Shortcut"
+        window.isReleasedWhenClosed = false
+        window.delegate = self // catches the close button too, not just Cancel/Esc
+
+        let instruction = NSTextField(labelWithString: "Press the shortcut that should open Noot.")
+        instruction.font = .systemFont(ofSize: 13, weight: .medium)
+        let hint = NSTextField(labelWithString: "Include Command, Option, or Control so normal typing stays available.")
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+
+        recorder.shortcut = current
+        recorder.setAccessibilityValue(current.displayName)
+        recorder.onShortcutChanged = { [weak self] _ in self?.saveButton.isEnabled = true }
+        recorder.onCancel = { [weak self] in self?.close() }
+        recorder.translatesAutoresizingMaskIntoConstraints = false
+
+        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        saveButton.target = self
+        saveButton.action = #selector(save)
+        saveButton.keyEquivalent = "\r"
+        let buttons = NSStackView(views: [NSView(), cancelButton, saveButton])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+
+        let stack = NSStackView(views: [instruction, recorder, hint, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        window.contentView = NSView()
+        window.contentView?.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 22),
+            stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -22),
+            stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 20),
+            stack.bottomAnchor.constraint(equalTo: window.contentView!.bottomAnchor, constant: -18),
+            recorder.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            recorder.heightAnchor.constraint(equalToConstant: 56),
+            buttons.widthAnchor.constraint(equalTo: stack.widthAnchor),
+        ])
+        window.initialFirstResponder = recorder
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        window?.center()
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(sender)
+        window?.makeFirstResponder(recorder)
+    }
+
+    @objc private func cancel() { close() }
+
+    @objc private func save() {
+        guard let shortcut = recorder.shortcut, onSave(shortcut) else { return }
+        close()
+    }
+
+    func windowWillClose(_ notification: Notification) { onClose?() }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var panel: NotesPanel!
-    var statusItem: NSStatusItem!
-    var iconMenu: NSMenu!
-    var axItem: NSMenuItem!
-    var updateItem: NSMenuItem!
+    var statusItem: NSStatusItem?
     var hotKeyRef: EventHotKeyRef?
-    var hotKeyRef2: EventHotKeyRef?
+    var captureHotKeyRef: EventHotKeyRef?
+    var hotKeyHandlerRef: EventHandlerRef?
+    var openingShortcut = OpeningShortcut.saved
+    var openingShortcutsEnabled = true
+    var shortcutRecorderController: ShortcutRecorderController?
+    var availableUpdateTitle: String?
+    var menuBarShownForShortcutPause = false
     var placed = false
     var lastShiftTap: TimeInterval = 0
     var shiftWasDown = false
+
+    var isMenuBarVisible: Bool { statusItem != nil }
+
+    var prefersMenuBarIcon: Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: "showInMenuBar") != nil else { return true }
+        return defaults.bool(forKey: "showInMenuBar")
+    }
+
+    // A double tap has no key, only a modifier, so a fixed list beats a recorder.
+    static let doubleTapChoices: [(id: String, label: String, flag: NSEvent.ModifierFlags?)] = [
+        ("command", "⌘⌘", .command),
+        ("option", "⌥⌥", .option),
+        ("control", "⌃⌃", .control),
+        ("shift", "⇧⇧", .shift),
+        ("off", "Off", nil),
+    ]
+
+    var doubleTapChoice: (id: String, label: String, flag: NSEvent.ModifierFlags?) {
+        let saved = UserDefaults.standard.string(forKey: "doubleTapModifier") ?? "command"
+        return Self.doubleTapChoices.first { $0.id == saved } ?? Self.doubleTapChoices[0]
+    }
+
+    var openTitle: String {
+        let tap = doubleTapChoice.flag == nil ? "" : "\(doubleTapChoice.label) or "
+        return "Open Noot (\(tap)\(openingShortcut.displayName))"
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         panel = NotesPanel(
@@ -1054,64 +1505,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.isOpaque = false
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
+        panel.minSize = NSSize(width: 480, height: 320)
         panel.contentView = NSHostingView(rootView: RootView())
         if panel.setFrameUsingName("NootPanel") { placed = true } // restore last size/position
         panel.setFrameAutosaveName("NootPanel")
 
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        let iconName = UserDefaults.standard.string(forKey: "statusIcon") ?? "note.text"
-        statusItem.button?.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Noot")
-        let menu = NSMenu()
-        let toggle = NSMenuItem(title: "Toggle Noot (⌘⌘ or ⌥⌘N)", action: #selector(togglePanel), keyEquivalent: "")
-        toggle.target = self
-        menu.addItem(toggle)
-        let daily = NSMenuItem(title: "Open Daily Note (⇧⌘D)", action: #selector(showDaily), keyEquivalent: "")
-        daily.target = self
-        menu.addItem(daily)
-        let capture = NSMenuItem(title: "Capture Clipboard (⌥⌘C)", action: #selector(quickCapture), keyEquivalent: "")
-        capture.target = self
-        menu.addItem(capture)
-        let iconItem = NSMenuItem(title: "Icon", action: nil, keyEquivalent: "")
-        iconMenu = NSMenu(title: "Icon")
-        for (symbol, label) in [("note.text", "Note"), ("sparkles", "Sparkles"),
-                                ("scribble.variable", "Scribble"), ("pencil.and.outline", "Pencil"),
-                                ("bolt.fill", "Bolt"), ("leaf.fill", "Leaf"),
-                                ("moon.stars.fill", "Moon"), ("flame.fill", "Flame")] {
-            let item = NSMenuItem(title: label, action: #selector(changeIcon(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = symbol
-            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-            item.state = symbol == iconName ? .on : .off
-            iconMenu.addItem(item)
-        }
-        iconItem.submenu = iconMenu
-        menu.addItem(iconItem)
-        let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLoginItem(_:)), keyEquivalent: "")
-        login.target = self
-        login.isEnabled = Bundle.main.bundleIdentifier != nil
-        login.state = (Bundle.main.bundleIdentifier != nil && SMAppService.mainApp.status == .enabled) ? .on : .off
-        menu.addItem(login)
-        axItem = NSMenuItem(title: "Enable ⌘⌘ (Accessibility)…", action: #selector(openAccessibilitySettings), keyEquivalent: "")
-        axItem.target = self
-        menu.addItem(axItem)
-        updateItem = NSMenuItem(title: "", action: #selector(updateClicked), keyEquivalent: "")
-        updateItem.target = self
-        updateItem.isHidden = true
-        menu.addItem(updateItem)
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        menu.delegate = self
-        statusItem.menu = menu
-
-        // first bundled launch: enable launch-at-login once; the menu item can turn it off
+        // first bundled launch: enable open-at-login once; the menu item can turn it off
         if Bundle.main.bundleIdentifier != nil, !UserDefaults.standard.bool(forKey: "didAutoLogin") {
             UserDefaults.standard.set(true, forKey: "didAutoLogin")
             try? SMAppService.mainApp.register()
-            login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         }
 
+        if prefersMenuBarIcon { setMenuBarVisible(true, persist: false) }
         installEditMenu() // key-equivalents (⌘C/⌘V/⌘Z) need a main menu even in accessory apps
-        registerHotKey()
+        installHotKeys()
         installDoubleShift()
         // start hidden: the panel is summoned, it doesn't ambush — except the very first run
         if !UserDefaults.standard.bool(forKey: "launchedBefore") {
@@ -1122,6 +1529,186 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { [weak self] _ in
             self?.checkForUpdates()
         }
+    }
+
+    func setMenuBarVisible(_ visible: Bool, persist: Bool = true) {
+        if visible {
+            if persist { UserDefaults.standard.set(true, forKey: "showInMenuBar") }
+            guard statusItem == nil else { return }
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            statusItem = item
+            let iconName = UserDefaults.standard.string(forKey: "statusIcon") ?? "note.text"
+            item.button?.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Noot")
+            item.menu = makeStatusMenu()
+            return
+        }
+
+        guard openingShortcutsEnabled else {
+            showAlert(
+                title: "Resume opening shortcuts first",
+                message: "Keeping the menu-bar icon visible prevents Noot from becoming unreachable while its opening shortcuts are paused.")
+            return
+        }
+        if persist { UserDefaults.standard.set(false, forKey: "showInMenuBar") }
+        guard let item = statusItem else { return }
+        NSStatusBar.system.removeStatusItem(item)
+        statusItem = nil
+    }
+
+    func makeStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false // refreshMenu owns isEnabled; auto-validation would undo it
+
+        let toggle = NSMenuItem(
+            title: openTitle,
+            action: #selector(togglePanel),
+            keyEquivalent: "")
+        toggle.target = self
+        menu.addItem(toggle)
+
+        let daily = NSMenuItem(title: "Open Daily Note (⇧⌘D)", action: #selector(showDaily), keyEquivalent: "")
+        daily.target = self
+        menu.addItem(daily)
+        let capture = NSMenuItem(title: "Capture Clipboard (⌥⌘C)", action: #selector(quickCapture), keyEquivalent: "")
+        capture.target = self
+        menu.addItem(capture)
+        menu.addItem(.separator())
+
+        let openingShortcuts = NSMenuItem(
+            title: "Opening Shortcuts Enabled",
+            action: #selector(toggleOpeningShortcuts),
+            keyEquivalent: "")
+        openingShortcuts.target = self
+        openingShortcuts.toolTip = "This pause lasts until Noot quits"
+        menu.addItem(openingShortcuts)
+
+        let doubleTapItem = NSMenuItem(title: "Double-Tap to Open", action: nil, keyEquivalent: "")
+        let doubleTaps = NSMenu(title: "Double-Tap to Open")
+        for choice in Self.doubleTapChoices {
+            let item = NSMenuItem(title: choice.label, action: #selector(changeDoubleTap(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = choice.id
+            doubleTaps.addItem(item)
+        }
+        doubleTapItem.submenu = doubleTaps
+        menu.addItem(doubleTapItem)
+
+        let shortcut = NSMenuItem(
+            title: "Change Opening Shortcut… (\(openingShortcut.displayName))",
+            action: #selector(showShortcutRecorder),
+            keyEquivalent: "")
+        shortcut.target = self
+        menu.addItem(shortcut)
+
+        let accessibility = NSMenuItem(
+            title: "Enable ⌘⌘ (Accessibility)…",
+            action: #selector(openAccessibilitySettings),
+            keyEquivalent: "")
+        accessibility.target = self
+        menu.addItem(accessibility)
+        menu.addItem(.separator())
+
+        let showMenuBar = NSMenuItem(
+            title: "Show in Menu Bar",
+            action: #selector(toggleMenuBarItem),
+            keyEquivalent: "")
+        showMenuBar.target = self
+        showMenuBar.toolTip = "You can always reopen this menu by right-clicking Noot’s top toolbar"
+        menu.addItem(showMenuBar)
+
+        let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLoginItem(_:)), keyEquivalent: "")
+        login.target = self
+        menu.addItem(login)
+
+        let iconItem = NSMenuItem(title: "Icon", action: nil, keyEquivalent: "")
+        let icons = NSMenu(title: "Icon")
+        for (symbol, label) in [("note.text", "Note"), ("sparkles", "Sparkles"),
+                                ("scribble.variable", "Scribble"), ("pencil.and.outline", "Pencil"),
+                                ("bolt.fill", "Bolt"), ("leaf.fill", "Leaf"),
+                                ("moon.stars.fill", "Moon"), ("flame.fill", "Flame")] {
+            let item = NSMenuItem(title: label, action: #selector(changeIcon(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = symbol
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+            icons.addItem(item)
+        }
+        iconItem.submenu = icons
+        menu.addItem(iconItem)
+
+        let update = NSMenuItem(
+            title: availableUpdateTitle ?? "",
+            action: #selector(updateClicked),
+            keyEquivalent: "")
+        update.target = self
+        menu.addItem(update)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.delegate = self
+        refreshMenu(menu)
+        return menu
+    }
+
+    @objc func toggleMenuBarItem() {
+        let shouldShow = !isMenuBarVisible
+        // Removing a status item while its menu is tracking is safest on the
+        // next run-loop turn. The same path also supports the toolbar menu.
+        DispatchQueue.main.async { [weak self] in self?.setMenuBarVisible(shouldShow) }
+    }
+
+    func menuItem(in menu: NSMenu, action: Selector) -> NSMenuItem? {
+        menu.items.first { $0.action == action }
+    }
+
+    func submenu(in menu: NSMenu, titled title: String) -> NSMenu? {
+        menu.items.compactMap(\.submenu).first { $0.title == title }
+    }
+
+    @objc func changeDoubleTap(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(id, forKey: "doubleTapModifier")
+        lastShiftTap = 0 // drop any half-finished tap on the old modifier
+        shiftWasDown = false
+        sender.menu?.items.forEach { $0.state = ($0.representedObject as? String) == id ? .on : .off }
+        updateShortcutMenu()
+    }
+
+    func refreshMenu(_ menu: NSMenu) {
+        let trusted = AXIsProcessTrusted()
+        menuItem(in: menu, action: #selector(togglePanel))?.title = openTitle
+
+        let opening = menuItem(in: menu, action: #selector(toggleOpeningShortcuts))
+        opening?.state = openingShortcutsEnabled ? .on : .off
+
+        menuItem(in: menu, action: #selector(showShortcutRecorder))?.title =
+            "Change Opening Shortcut… (\(openingShortcut.displayName))"
+
+        let accessibility = menuItem(in: menu, action: #selector(openAccessibilitySettings))
+        let tap = doubleTapChoice.flag == nil ? "" : "\(doubleTapChoice.label) "
+        accessibility?.title = trusted ? "\(tap)Accessibility ✓" : "Enable \(tap)(Accessibility)…"
+        accessibility?.state = trusted ? .on : .off
+
+        let showMenuBar = menuItem(in: menu, action: #selector(toggleMenuBarItem))
+        showMenuBar?.state = isMenuBarVisible ? .on : .off
+        showMenuBar?.isEnabled = openingShortcutsEnabled
+
+        let login = menuItem(in: menu, action: #selector(toggleLoginItem(_:)))
+        login?.isEnabled = Bundle.main.bundleIdentifier != nil
+        login?.state =
+            (Bundle.main.bundleIdentifier != nil && SMAppService.mainApp.status == .enabled) ? .on : .off
+
+        // scoped by submenu title: both submenus use String representedObjects
+        let iconName = UserDefaults.standard.string(forKey: "statusIcon") ?? "note.text"
+        submenu(in: menu, titled: "Icon")?.items.forEach {
+            $0.state = ($0.representedObject as? String) == iconName ? .on : .off
+        }
+        let tapID = doubleTapChoice.id
+        submenu(in: menu, titled: "Double-Tap to Open")?.items.forEach {
+            $0.state = ($0.representedObject as? String) == tapID ? .on : .off
+        }
+
+        let update = menuItem(in: menu, action: #selector(updateClicked))
+        update?.title = availableUpdateTitle ?? ""
+        update?.isHidden = availableUpdateTitle == nil
     }
 
     var installedViaBrew: Bool {
@@ -1141,10 +1728,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if latest.compare(current, options: .numeric) == .orderedDescending {
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    self.updateItem.title = self.installedViaBrew
+                    self.availableUpdateTitle = self.installedViaBrew
                         ? "Update v\(latest) — copy brew command"
                         : "Update v\(latest) available…"
-                    self.updateItem.isHidden = false
+                    if let menu = self.statusItem?.menu { self.refreshMenu(menu) }
                 }
             }
         }.resume()
@@ -1163,8 +1750,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func changeIcon(_ sender: NSMenuItem) {
         guard let symbol = sender.representedObject as? String else { return }
         UserDefaults.standard.set(symbol, forKey: "statusIcon")
-        statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Noot")
-        iconMenu.items.forEach { $0.state = ($0.representedObject as? String) == symbol ? .on : .off }
+        statusItem?.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Noot")
+        sender.menu?.items.forEach { $0.state = ($0.representedObject as? String) == symbol ? .on : .off }
+        if let menu = statusItem?.menu { refreshMenu(menu) }
+    }
+
+    func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        if let window = shortcutRecorderController?.window, window.isVisible {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 
     // double-tap command toggles the panel; the global monitor needs Accessibility permission.
@@ -1181,9 +1782,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func handleShiftTap(_ e: NSEvent) {
+        guard openingShortcutsEnabled else {
+            lastShiftTap = 0
+            shiftWasDown = false
+            return
+        }
+        guard let target = doubleTapChoice.flag else { lastShiftTap = 0; shiftWasDown = false; return }
         guard e.type == .flagsChanged else { lastShiftTap = 0; return } // any real key (⌘C, ⌘D…) cancels the tap
         let flags = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == .command {
+        if flags == target {
             if !shiftWasDown {
                 if e.timestamp - lastShiftTap < 0.35 {
                     lastShiftTap = 0
@@ -1226,7 +1833,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.mainMenu = main
     }
 
-    func registerHotKey() {
+    func installHotKeys() {
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                       eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetEventDispatcherTarget(), { _, event, _ -> OSStatus in
@@ -1236,16 +1843,146 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                               MemoryLayout<EventHotKeyID>.size, nil, &hk)
             DispatchQueue.main.async {
                 guard let d = NSApp.delegate as? AppDelegate else { return }
-                if hk.id == 2 { d.quickCapture() } else { d.togglePanel() }
+                if hk.id == 2 {
+                    d.quickCapture()
+                } else if d.openingShortcutsEnabled {
+                    d.togglePanel()
+                }
             }
             return noErr
-        }, 1, &eventType, nil, nil)
-        let toggleID = EventHotKeyID(signature: OSType(0x464C4E54), id: 1) // 'FLNT'
-        RegisterEventHotKey(UInt32(kVK_ANSI_N), UInt32(cmdKey | optionKey), toggleID,
-                            GetEventDispatcherTarget(), 0, &hotKeyRef)
-        let captureID = EventHotKeyID(signature: OSType(0x464C4E54), id: 2)
-        RegisterEventHotKey(UInt32(kVK_ANSI_C), UInt32(cmdKey | optionKey), captureID,
-                            GetEventDispatcherTarget(), 0, &hotKeyRef2)
+        }, 1, &eventType, nil, &hotKeyHandlerRef)
+
+        let openingStatus = registerOpeningHotKey(openingShortcut)
+        if openingStatus != noErr {
+            NSLog("Could not register opening shortcut \(openingShortcut.displayName): \(openingStatus)")
+            openingShortcutsEnabled = false
+            // rescue only: don't overwrite a saved "hidden" choice, and put the
+            // icon away again once the shortcut is working
+            if !isMenuBarVisible {
+                setMenuBarVisible(true, persist: false)
+                menuBarShownForShortcutPause = true
+            }
+            updateShortcutMenu()
+        }
+
+        let captureID = EventHotKeyID(signature: OSType(0x4E4F4F54), id: 2) // 'NOOT'
+        let captureStatus = RegisterEventHotKey(
+            UInt32(kVK_ANSI_C),
+            UInt32(cmdKey | optionKey),
+            captureID,
+            GetEventDispatcherTarget(),
+            0,
+            &captureHotKeyRef)
+        if captureStatus != noErr {
+            NSLog("Could not register clipboard shortcut: \(captureStatus)")
+        }
+    }
+
+    @discardableResult
+    func registerOpeningHotKey(_ shortcut: OpeningShortcut) -> OSStatus {
+        let toggleID = EventHotKeyID(signature: OSType(0x4E4F4F54), id: 1) // 'NOOT'
+        var newRef: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            shortcut.keyCode,
+            shortcut.modifiers,
+            toggleID,
+            GetEventDispatcherTarget(),
+            0,
+            &newRef)
+        if status == noErr { hotKeyRef = newRef }
+        return status
+    }
+
+    func unregisterOpeningHotKey() {
+        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
+        hotKeyRef = nil
+    }
+
+    func validateOpeningShortcut(_ shortcut: OpeningShortcut) -> OSStatus {
+        let toggleID = EventHotKeyID(signature: OSType(0x4E4F4F54), id: 1)
+        var temporaryRef: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            shortcut.keyCode,
+            shortcut.modifiers,
+            toggleID,
+            GetEventDispatcherTarget(),
+            0,
+            &temporaryRef)
+        if let temporaryRef { UnregisterEventHotKey(temporaryRef) }
+        return status
+    }
+
+    @objc func showShortcutRecorder() {
+        // reuse the open window: a second controller would orphan the first one
+        if let existing = shortcutRecorderController {
+            existing.showWindow(nil)
+            return
+        }
+        let controller = ShortcutRecorderController(current: openingShortcut) { [weak self] shortcut in
+            self?.applyOpeningShortcut(shortcut) ?? false
+        }
+        controller.onClose = { [weak self] in self?.shortcutRecorderController = nil }
+        shortcutRecorderController = controller
+        controller.showWindow(nil)
+    }
+
+    func applyOpeningShortcut(_ shortcut: OpeningShortcut) -> Bool {
+        guard shortcut != openingShortcut else { return true }
+        let previous = openingShortcut
+        let status: OSStatus
+        if openingShortcutsEnabled {
+            unregisterOpeningHotKey()
+            status = registerOpeningHotKey(shortcut)
+            if status != noErr { _ = registerOpeningHotKey(previous) }
+        } else {
+            status = validateOpeningShortcut(shortcut)
+        }
+        guard status == noErr else {
+            showAlert(
+                title: "Shortcut unavailable",
+                message: "Noot could not register \(shortcut.displayName). It may be reserved by macOS or already used by Noot. Press a different shortcut.")
+            return false
+        }
+
+        openingShortcut = shortcut
+        openingShortcut.save()
+        updateShortcutMenu()
+        return true
+    }
+
+    @objc func toggleOpeningShortcuts() {
+        if openingShortcutsEnabled {
+            if !isMenuBarVisible {
+                // A temporary status item prevents a lockout after the panel is
+                // hidden. The user's saved visibility preference stays off.
+                setMenuBarVisible(true, persist: false)
+                menuBarShownForShortcutPause = true
+            }
+            openingShortcutsEnabled = false
+            unregisterOpeningHotKey()
+            lastShiftTap = 0
+            shiftWasDown = false
+        } else {
+            let status = registerOpeningHotKey(openingShortcut)
+            guard status == noErr else {
+                showAlert(
+                    title: "Shortcut unavailable",
+                    message: "Noot could not re-register \(openingShortcut.displayName). Choose a different opening shortcut.")
+                return
+            }
+            openingShortcutsEnabled = true
+            if menuBarShownForShortcutPause {
+                menuBarShownForShortcutPause = false
+                DispatchQueue.main.async { [weak self] in
+                    self?.setMenuBarVisible(false, persist: false)
+                }
+            }
+        }
+        updateShortcutMenu()
+    }
+
+    func updateShortcutMenu() {
+        if let menu = statusItem?.menu { refreshMenu(menu) }
     }
 
     @objc func quickCapture() {
@@ -1256,11 +1993,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func flashIcon() {
-        statusItem.button?.image = NSImage(systemSymbolName: "checkmark.circle.fill",
-                                           accessibilityDescription: "Captured")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        statusItem?.button?.image = NSImage(systemSymbolName: "checkmark.circle.fill",
+                                            accessibilityDescription: "Captured")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             let name = UserDefaults.standard.string(forKey: "statusIcon") ?? "note.text"
-            self.statusItem.button?.image = NSImage(systemSymbolName: name, accessibilityDescription: "Noot")
+            self?.statusItem?.button?.image = NSImage(
+                systemSymbolName: name,
+                accessibilityDescription: "Noot")
         }
     }
 
@@ -1270,9 +2009,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        let trusted = AXIsProcessTrusted()
-        axItem.title = trusted ? "⌘⌘ Enabled (Accessibility ✓)" : "Enable ⌘⌘ (Accessibility)…"
-        axItem.state = trusted ? .on : .off
+        refreshMenu(menu)
     }
 
     @objc func openAccessibilitySettings() {
@@ -1282,10 +2019,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func toggleLoginItem(_ sender: NSMenuItem) {
         guard Bundle.main.bundleIdentifier != nil else { return } // needs the .app bundle
-        if SMAppService.mainApp.status == .enabled {
-            try? SMAppService.mainApp.unregister()
-        } else {
-            try? SMAppService.mainApp.register()
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+        } catch {
+            showAlert(title: "Could not update Open at Login", message: error.localizedDescription)
         }
         sender.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
