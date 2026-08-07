@@ -459,6 +459,31 @@ final class QuickLooker: NSObject, QLPreviewPanelDataSource {
 
 // text view that accepts pasted/dropped images and files, copying them into assets/
 final class NootTextView: NSTextView {
+    var dividerRanges: [NSRange] = [] {
+        didSet { needsDisplay = true }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard !dividerRanges.isEmpty, let layoutManager else { return }
+
+        NSColor.separatorColor.withAlphaComponent(0.7).setStroke()
+        for range in dividerRanges where range.location < string.utf16.count {
+            let glyph = layoutManager.glyphIndexForCharacter(at: range.location)
+            var lineRange = NSRange()
+            let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &lineRange)
+                .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+            guard fragment.intersects(dirtyRect) else { continue }
+            let scale = window?.backingScaleFactor ?? 2
+            let y = (fragment.midY * scale).rounded() / scale
+            let line = NSBezierPath()
+            line.lineWidth = 1 / scale
+            line.move(to: NSPoint(x: textContainerInset.width, y: y))
+            line.line(to: NSPoint(x: bounds.width - textContainerInset.width, y: y))
+            line.stroke()
+        }
+    }
+
     // ⌘Y: Quick Look the file link under the caret
     @objc func quickLookLink(_ sender: Any?) {
         guard let storage = textStorage, storage.length > 0 else { return }
@@ -663,8 +688,77 @@ struct MarkdownEditor: NSViewRepresentable {
                 tv.window?.orderOut(nil)
                 return true
             }
+            if sel == #selector(NSResponder.insertTab(_:)) {
+                return changeIndentation(tv, outdent: false)
+            }
+            if sel == #selector(NSResponder.insertBacktab(_:)) {
+                return changeIndentation(tv, outdent: true)
+            }
             if sel == #selector(NSResponder.insertNewline(_:)) { return continueList(tv) }
             return false
+        }
+
+        // Tab and Shift-Tab operate on complete Markdown lines. A selection is
+        // kept selected after replacement, so repeated presses move the whole
+        // block through nesting levels as one undoable edit.
+        func changeIndentation(_ tv: NSTextView, outdent: Bool) -> Bool {
+            let ns = tv.string as NSString
+            let selection = tv.selectedRange()
+            guard selection.location != NSNotFound, selection.location <= ns.length else { return true }
+
+            var effectiveSelection = selection
+            // A selection ending exactly at the next line's start should not
+            // unexpectedly include that otherwise-unselected line.
+            if effectiveSelection.length > 0,
+               NSMaxRange(effectiveSelection) > effectiveSelection.location,
+               NSMaxRange(effectiveSelection) <= ns.length,
+               NSMaxRange(effectiveSelection) > 0,
+               ns.character(at: NSMaxRange(effectiveSelection) - 1) == 10 {
+                effectiveSelection.length -= 1
+            }
+
+            let lineRange = ns.lineRange(for: effectiveSelection)
+            var block = ns.substring(with: lineRange)
+            let hasTrailingNewline = block.hasSuffix("\n")
+            if hasTrailingNewline { block.removeLast() }
+            var lines = block.components(separatedBy: "\n")
+
+            var firstLineDelta = 0
+            var changed = false
+            for index in lines.indices {
+                if outdent {
+                    let removed: Int
+                    if lines[index].hasPrefix("\t") {
+                        removed = 1
+                    } else {
+                        removed = min(lines[index].prefix { $0 == " " }.count, 2)
+                    }
+                    if removed > 0 {
+                        lines[index].removeFirst(removed)
+                        changed = true
+                    }
+                    if index == 0 { firstLineDelta = -removed }
+                } else {
+                    lines[index] = "  " + lines[index]
+                    changed = true
+                    if index == 0 { firstLineDelta = 2 }
+                }
+            }
+            guard changed else { return true }
+
+            let replacement = lines.joined(separator: "\n") + (hasTrailingNewline ? "\n" : "")
+            tv.insertText(replacement, replacementRange: lineRange)
+            let replacementLength = (replacement as NSString).length
+            if selection.length > 0 {
+                let selectedLength = max(0, replacementLength - (hasTrailingNewline ? 1 : 0))
+                tv.setSelectedRange(NSRange(location: lineRange.location, length: selectedLength))
+            } else {
+                let location = max(lineRange.location,
+                                   min(lineRange.location + replacementLength,
+                                       selection.location + firstLineDelta))
+                tv.setSelectedRange(NSRange(location: location, length: 0))
+            }
+            return true
         }
 
         func continueList(_ tv: NSTextView) -> Bool {
@@ -743,6 +837,7 @@ struct MarkdownEditor: NSViewRepresentable {
             }
 
             var hide: [NSRange] = [] // marker ranges to render glyph-less ("converted" look)
+            var dividers: [NSRange] = []
 
             // headers: big font, hidden # marker
             for (i, hSize) in [(1, size + 11), (2, size + 6), (3, size + 2)] {
@@ -773,6 +868,9 @@ struct MarkdownEditor: NSViewRepresentable {
                 add(m.range(at: 3), [.foregroundColor: dim])
                 hide.append(m.range(at: 1)); hide.append(m.range(at: 3))
             }
+            // A standalone Markdown thematic break stays rendered even while
+            // its line has the caret; the source remains plain `---` on disk.
+            re("^[ \\t]*---[ \\t]*$") { m in dividers.append(m.range) }
             // list markers
             re("^\\s*(?:[-*+]|\\d+\\.)(?= )") { m in add(m.range, [.foregroundColor: accentNS]) }
             // checkboxes (with or without a leading bullet): accent marker, clickable via fake link
@@ -828,6 +926,7 @@ struct MarkdownEditor: NSViewRepresentable {
             }
             storage.endEditing()
             tv.typingAttributes = base
+            (tv as? NootTextView)?.dividerRanges = dividers
 
             // hide syntax everywhere except the line(s) the caret is on
             let reveal = caretLines(tv)
@@ -835,6 +934,9 @@ struct MarkdownEditor: NSViewRepresentable {
             let old = hiddenIndexes
             hiddenIndexes = IndexSet()
             for r in hide where r.location != NSNotFound && NSIntersectionRange(r, reveal).length == 0 {
+                hiddenIndexes.insert(integersIn: r.location ..< NSMaxRange(r))
+            }
+            for r in dividers where r.location != NSNotFound {
                 hiddenIndexes.insert(integersIn: r.location ..< NSMaxRange(r))
             }
             // invalidate only where hidden-state changed — full-range invalidation
