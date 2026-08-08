@@ -433,6 +433,12 @@ enum Fmt {
         }
         focusEditor()
     }
+
+    static func divider() {
+        guard let tv = gTextView as? NootTextView else { return }
+        tv.insertDivider()
+        focusEditor()
+    }
 }
 
 // resolve markdown link targets: absolute URLs pass through, relative paths land in the notes dir
@@ -459,6 +465,99 @@ final class QuickLooker: NSObject, QLPreviewPanelDataSource {
 
 // text view that accepts pasted/dropped images and files, copying them into assets/
 final class NootTextView: NSTextView {
+    // Completing `---` at the start of an otherwise-empty line immediately
+    // creates the block and advances into the following editable paragraph.
+    // The newline remains in the Markdown source, but no extra Enter press is
+    // required from the user.
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        let insertedText: String?
+        if let string = insertString as? String {
+            insertedText = string
+        } else if let string = insertString as? NSString {
+            insertedText = string as String
+        } else {
+            insertedText = nil
+        }
+
+        let effectiveRange = replacementRange.location == NSNotFound
+            ? selectedRange()
+            : replacementRange
+        if insertedText == "-",
+           let completion = dividerCompletion(at: effectiveRange) {
+            super.insertText(completion.text, replacementRange: completion.range)
+            return
+        }
+        super.insertText(insertString, replacementRange: replacementRange)
+    }
+
+    private func dividerCompletion(at replacementRange: NSRange)
+        -> (text: String, range: NSRange)? {
+        guard replacementRange.location != NSNotFound,
+              replacementRange.length == 0 else { return nil }
+        let ns = string as NSString
+        let caret = replacementRange.location
+        guard caret >= 2, caret <= ns.length else { return nil }
+
+        var lineStart = caret
+        while lineStart > 0 {
+            let previous = ns.character(at: lineStart - 1)
+            if previous == 10 || previous == 13 { break }
+            lineStart -= 1
+        }
+        let prefix = NSRange(location: lineStart, length: caret - lineStart)
+        guard ns.substring(with: prefix) == "--" else { return nil }
+
+        if caret == ns.length {
+            return ("---\n", prefix)
+        }
+        if ns.character(at: caret) == 13 {
+            let newlineLength = caret + 1 < ns.length && ns.character(at: caret + 1) == 10 ? 2 : 1
+            return ("---" + ns.substring(with: NSRange(location: caret, length: newlineLength)),
+                    NSRange(location: lineStart, length: prefix.length + newlineLength))
+        }
+        if ns.character(at: caret) == 10 {
+            return ("---\n", NSRange(location: lineStart, length: prefix.length + 1))
+        }
+        return nil
+    }
+
+    func insertDivider() {
+        let ns = string as NSString
+        let selection = selectedRange()
+        guard selection.location != NSNotFound,
+              selection.location <= ns.length,
+              NSMaxRange(selection) <= ns.length else { return }
+
+        if selection.length == 0 {
+            let lineRange = ns.lineRange(for: selection)
+            var contentRange = lineRange
+            while contentRange.length > 0 {
+                let last = ns.character(at: NSMaxRange(contentRange) - 1)
+                guard last == 10 || last == 13 else { break }
+                contentRange.length -= 1
+            }
+            let content = ns.substring(with: contentRange)
+            if content.trimmingCharacters(in: .whitespaces).isEmpty {
+                let lineEnding = ns.substring(with: NSRange(
+                    location: NSMaxRange(contentRange),
+                    length: lineRange.length - contentRange.length
+                ))
+                insertText("---" + (lineEnding.isEmpty ? "\n" : lineEnding),
+                           replacementRange: lineRange)
+                return
+            }
+        }
+
+        let selectedLines = ns.lineRange(for: selection)
+        let endsWithNewline = selectedLines.length > 0 && {
+            let last = ns.character(at: NSMaxRange(selectedLines) - 1)
+            return last == 10 || last == 13
+        }()
+        let insertion = NSMaxRange(selectedLines)
+        insertText(endsWithNewline ? "---\n" : "\n---\n",
+                   replacementRange: NSRange(location: insertion, length: 0))
+    }
+
     // A rendered thematic break is a block boundary, not an inline attachment.
     // Clicking it moves into the following editable line instead of leaving an
     // insertion point beside the hidden `---` source.
@@ -466,7 +565,6 @@ final class NootTextView: NSTextView {
         guard event.clickCount == 1,
               !event.modifierFlags.contains(.shift),
               let layoutManager = layoutManager as? NootMarkdownLayoutManager,
-              let textContainer,
               !layoutManager.dividerRanges.isEmpty
         else {
             super.mouseDown(with: event)
@@ -475,42 +573,41 @@ final class NootTextView: NSTextView {
         let point = convert(event.locationInWindow, from: nil)
         let containerPoint = NSPoint(x: point.x - textContainerOrigin.x,
                                      y: point.y - textContainerOrigin.y)
-        let glyph = layoutManager.glyphIndex(for: containerPoint,
-                                             in: textContainer,
-                                             fractionOfDistanceThroughGlyph: nil)
-        guard glyph < layoutManager.numberOfGlyphs else {
-            super.mouseDown(with: event)
-            return
-        }
-        let character = layoutManager.characterIndexForGlyph(at: glyph)
-        guard let divider = layoutManager.dividerRanges.first(where: {
-            NSLocationInRange(character, $0) || character == NSMaxRange($0)
-        }) else {
-            super.mouseDown(with: event)
-            return
-        }
-        let dividerGlyph = layoutManager.glyphIndexForCharacter(at: divider.location)
-        let lineFragment = layoutManager.lineFragmentRect(forGlyphAt: dividerGlyph,
-                                                          effectiveRange: nil)
-        guard containerPoint.y >= lineFragment.minY,
-              containerPoint.y <= lineFragment.maxY else {
+        guard let divider = layoutManager.divider(at: containerPoint) else {
             super.mouseDown(with: event)
             return
         }
 
         window?.makeFirstResponder(self)
-        let ns = string as NSString
-        var target = NSMaxRange(divider)
-        if target < ns.length, CharacterSet.newlines.contains(UnicodeScalar(ns.character(at: target))!) {
-            target += 1
-            if target < ns.length,
-               ns.character(at: target - 1) == 13,
-               ns.character(at: target) == 10 {
-                target += 1
-            }
-        }
+        let target = positionAfterDivider(divider)
         setSelectedRange(NSRange(location: target, length: 0))
         scrollRangeToVisible(selectedRange())
+    }
+
+    func positionAfterDivider(_ divider: NSRange) -> Int {
+        let ns = string as NSString
+        var target = NSMaxRange(divider)
+        guard target < ns.length else { return target }
+        if ns.character(at: target) == 13 {
+            target += 1
+            if target < ns.length, ns.character(at: target) == 10 { target += 1 }
+        } else if ns.character(at: target) == 10 {
+            target += 1
+        }
+        return target
+    }
+
+    func positionBeforeDivider(_ divider: NSRange) -> Int {
+        let ns = string as NSString
+        var target = divider.location
+        guard target > 0 else { return target }
+        if ns.character(at: target - 1) == 10 {
+            target -= 1
+            if target > 0, ns.character(at: target - 1) == 13 { target -= 1 }
+        } else if ns.character(at: target - 1) == 13 {
+            target -= 1
+        }
+        return target
     }
 
     // Backspace at the beginning of the paragraph after a divider removes the
@@ -675,6 +772,8 @@ struct MarkdownEditor: NSViewRepresentable {
         var parent: MarkdownEditor
         var lastFontSize: CGFloat = 0
         var lastPara = NSRange(location: NSNotFound, length: 0)
+        var lastSelectionLocation = 0
+        var isNormalizingDividerSelection = false
         init(_ parent: MarkdownEditor) { self.parent = parent }
 
         func textDidChange(_ n: Notification) {
@@ -707,12 +806,42 @@ struct MarkdownEditor: NSViewRepresentable {
         // text system's edit pass — rehighlighting mid-edit garbles glyph layout.
         func textViewDidChangeSelection(_ n: Notification) {
             guard let tv = n.object as? NSTextView else { return }
+            if isNormalizingDividerSelection {
+                lastSelectionLocation = tv.selectedRange().location
+                return
+            }
+            if normalizeDividerSelection(tv) { return }
+            lastSelectionLocation = tv.selectedRange().location
             if caretLines(tv).location != lastPara.location {
                 DispatchQueue.main.async { [weak self, weak tv] in
                     guard let self, let tv else { return }
                     self.refreshPresentation(tv)
                 }
             }
+        }
+
+        func normalizeDividerSelection(_ tv: NSTextView) -> Bool {
+            guard let tv = tv as? NootTextView,
+                  let layoutManager = tv.layoutManager as? NootMarkdownLayoutManager else { return false }
+            let selection = tv.selectedRange()
+            guard selection.length == 0,
+                  let divider = layoutManager.dividerRanges.first(where: {
+                      selection.location >= $0.location
+                          && selection.location <= NSMaxRange($0)
+                  }) else { return false }
+            let target = selection.location >= lastSelectionLocation
+                ? tv.positionAfterDivider(divider)
+                : tv.positionBeforeDivider(divider)
+            guard target != selection.location else { return false }
+            isNormalizingDividerSelection = true
+            tv.setSelectedRange(NSRange(location: target, length: 0))
+            isNormalizingDividerSelection = false
+            lastSelectionLocation = target
+            DispatchQueue.main.async { [weak self, weak tv] in
+                guard let self, let tv else { return }
+                self.refreshPresentation(tv)
+            }
+            return true
         }
 
         func caretLines(_ tv: NSTextView) -> NSRange {
@@ -865,6 +994,7 @@ struct MarkdownEditor: NSViewRepresentable {
             lastPara = reveal
             layoutManager.updatePresentation(storage.presentation,
                                              revealing: reveal,
+                                             selection: tv.selectedRange(),
                                              textLength: storage.length)
         }
     }
@@ -1128,6 +1258,8 @@ struct ContentView: View {
             tb("checklist", "Checkbox  ⌘⇧T") { Fmt.linePrefix("- [ ] ") }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
             tb("text.quote", "Quote") { Fmt.linePrefix("> ") }
+            tb("minus", "Divider") { Fmt.divider() }
+                .accessibilityLabel("Divider")
             tb("link", "Link  ⌘⇧L") { Fmt.link() }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
             Spacer()

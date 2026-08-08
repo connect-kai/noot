@@ -523,6 +523,7 @@ final class NootMarkdownTextStorage: NSTextStorage {
 final class NootMarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     private var hiddenIndexes = IndexSet()
     private(set) var dividerRanges: [NSRange] = []
+    private let minimumDividerBlockHeight: CGFloat = 30
 
     override init() {
         super.init()
@@ -536,6 +537,7 @@ final class NootMarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate 
 
     func updatePresentation(_ presentation: NootMarkdownPresentation,
                             revealing revealRange: NSRange,
+                            selection: NSRange,
                             textLength: Int) {
         let old = hiddenIndexes
         var next = IndexSet()
@@ -544,8 +546,14 @@ final class NootMarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate 
                 && NSIntersectionRange(range, revealRange).length == 0 {
             next.insert(integersIn: range.location ..< NSMaxRange(range))
         }
-        let visibleDividers = presentation.dividerRanges.filter {
-            NSIntersectionRange($0, revealRange).length == 0
+        let ns = textStorage?.string as NSString?
+        let visibleDividers = presentation.dividerRanges.filter { divider in
+            let end = NSMaxRange(divider)
+            guard let ns, end < ns.length,
+                  CharacterSet.newlines.contains(UnicodeScalar(ns.character(at: end))!)
+            else { return false }
+            guard selection.length == 0 else { return true }
+            return selection.location < divider.location || selection.location > end
         }
         for range in visibleDividers where range.location != NSNotFound {
             next.insert(integersIn: range.location ..< NSMaxRange(range))
@@ -563,6 +571,35 @@ final class NootMarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate 
             invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
         }
         invalidateDisplay(forCharacterRange: NSRange(location: 0, length: textLength))
+    }
+
+    func layoutManager(_ layoutManager: NSLayoutManager,
+                       shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
+                       lineFragmentUsedRect: UnsafeMutablePointer<NSRect>,
+                       baselineOffset: UnsafeMutablePointer<CGFloat>,
+                       in textContainer: NSTextContainer,
+                       forGlyphRange glyphRange: NSRange) -> Bool {
+        guard dividerRange(intersectingGlyphRange: glyphRange) != nil else { return false }
+        let originalHeight = lineFragmentRect.pointee.height
+        let fontHeight: CGFloat
+        if let textStorage,
+           glyphRange.location < numberOfGlyphs {
+            let character = characterIndexForGlyph(at: glyphRange.location)
+            let font = textStorage.attribute(.font,
+                                             at: min(character, max(textStorage.length - 1, 0)),
+                                             effectiveRange: nil) as? NSFont
+            fontHeight = font.map(defaultLineHeight(for:)) ?? originalHeight
+        } else {
+            fontHeight = originalHeight
+        }
+        let blockHeight = max(minimumDividerBlockHeight, fontHeight + 12)
+        lineFragmentRect.pointee.size.height = blockHeight
+        lineFragmentUsedRect.pointee = NSRect(x: lineFragmentRect.pointee.minX,
+                                              y: lineFragmentRect.pointee.minY,
+                                              width: lineFragmentRect.pointee.width,
+                                              height: blockHeight)
+        baselineOffset.pointee += (blockHeight - originalHeight) / 2
+        return true
     }
 
     func layoutManager(_ layoutManager: NSLayoutManager,
@@ -587,6 +624,30 @@ final class NootMarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate 
         return glyphRange.length
     }
 
+    func divider(at point: NSPoint) -> NSRange? {
+        dividerRanges.first { range in
+            guard let rect = blockRect(for: range) else { return false }
+            return rect.contains(point)
+        }
+    }
+
+    func blockRect(for divider: NSRange) -> NSRect? {
+        guard divider.location != NSNotFound,
+              NSMaxRange(divider) < textStorage?.length ?? 0 else { return nil }
+        let glyph = glyphIndexForCharacter(at: NSMaxRange(divider))
+        guard glyph < numberOfGlyphs else { return nil }
+        return lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+    }
+
+    private func dividerRange(intersectingGlyphRange glyphRange: NSRange) -> NSRange? {
+        guard glyphRange.location < numberOfGlyphs else { return nil }
+        let characterRange = self.characterRange(forGlyphRange: glyphRange,
+                                                 actualGlyphRange: nil)
+        return dividerRanges.first {
+            NSLocationInRange(NSMaxRange($0), characterRange)
+        }
+    }
+
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
         guard let textStorage, !dividerRanges.isEmpty,
@@ -596,10 +657,10 @@ final class NootMarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate 
             ?? 2
         NSColor.separatorColor.withAlphaComponent(0.7).setStroke()
         for range in dividerRanges where range.location < textStorage.length {
-            let glyph = glyphIndexForCharacter(at: range.location)
-            guard NSLocationInRange(glyph, glyphsToShow) else { continue }
-            let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-                .offsetBy(dx: origin.x, dy: origin.y)
+            let anchorGlyph = glyphIndexForCharacter(at: NSMaxRange(range))
+            guard NSLocationInRange(anchorGlyph, glyphsToShow),
+                  let block = blockRect(for: range) else { continue }
+            let fragment = block.offsetBy(dx: origin.x, dy: origin.y)
             let y = (fragment.midY * scale).rounded() / scale
             let line = NSBezierPath()
             line.lineWidth = 1 / scale
