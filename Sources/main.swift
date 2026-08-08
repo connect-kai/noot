@@ -441,7 +441,7 @@ func linkURL(_ s: String) -> URL? {
     return URL(fileURLWithPath: s.removingPercentEncoding ?? s, relativeTo: NotesStore.shared.dir)
 }
 
-// MARK: - Markdown editor (NSTextView + regex highlighting)
+// MARK: - Markdown editor (native TextKit + swift-markdown)
 
 final class QuickLooker: NSObject, QLPreviewPanelDataSource {
     static let shared = QuickLooker()
@@ -459,29 +459,84 @@ final class QuickLooker: NSObject, QLPreviewPanelDataSource {
 
 // text view that accepts pasted/dropped images and files, copying them into assets/
 final class NootTextView: NSTextView {
-    var dividerRanges: [NSRange] = [] {
-        didSet { needsDisplay = true }
+    // A rendered thematic break is a block boundary, not an inline attachment.
+    // Clicking it moves into the following editable line instead of leaving an
+    // insertion point beside the hidden `---` source.
+    override func mouseDown(with event: NSEvent) {
+        guard event.clickCount == 1,
+              !event.modifierFlags.contains(.shift),
+              let layoutManager = layoutManager as? NootMarkdownLayoutManager,
+              let textContainer,
+              !layoutManager.dividerRanges.isEmpty
+        else {
+            super.mouseDown(with: event)
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        let containerPoint = NSPoint(x: point.x - textContainerOrigin.x,
+                                     y: point.y - textContainerOrigin.y)
+        let glyph = layoutManager.glyphIndex(for: containerPoint,
+                                             in: textContainer,
+                                             fractionOfDistanceThroughGlyph: nil)
+        guard glyph < layoutManager.numberOfGlyphs else {
+            super.mouseDown(with: event)
+            return
+        }
+        let character = layoutManager.characterIndexForGlyph(at: glyph)
+        guard let divider = layoutManager.dividerRanges.first(where: {
+            NSLocationInRange(character, $0) || character == NSMaxRange($0)
+        }) else {
+            super.mouseDown(with: event)
+            return
+        }
+        let dividerGlyph = layoutManager.glyphIndexForCharacter(at: divider.location)
+        let lineFragment = layoutManager.lineFragmentRect(forGlyphAt: dividerGlyph,
+                                                          effectiveRange: nil)
+        guard containerPoint.y >= lineFragment.minY,
+              containerPoint.y <= lineFragment.maxY else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        window?.makeFirstResponder(self)
+        let ns = string as NSString
+        var target = NSMaxRange(divider)
+        if target < ns.length, CharacterSet.newlines.contains(UnicodeScalar(ns.character(at: target))!) {
+            target += 1
+            if target < ns.length,
+               ns.character(at: target - 1) == 13,
+               ns.character(at: target) == 10 {
+                target += 1
+            }
+        }
+        setSelectedRange(NSRange(location: target, length: 0))
+        scrollRangeToVisible(selectedRange())
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        guard !dividerRanges.isEmpty, let layoutManager else { return }
-
-        NSColor.separatorColor.withAlphaComponent(0.7).setStroke()
-        for range in dividerRanges where range.location < string.utf16.count {
-            let glyph = layoutManager.glyphIndexForCharacter(at: range.location)
-            var lineRange = NSRange()
-            let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &lineRange)
-                .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
-            guard fragment.intersects(dirtyRect) else { continue }
-            let scale = window?.backingScaleFactor ?? 2
-            let y = (fragment.midY * scale).rounded() / scale
-            let line = NSBezierPath()
-            line.lineWidth = 1 / scale
-            line.move(to: NSPoint(x: textContainerInset.width, y: y))
-            line.line(to: NSPoint(x: bounds.width - textContainerInset.width, y: y))
-            line.stroke()
+    // Backspace at the beginning of the paragraph after a divider removes the
+    // whole Markdown block in one native, undoable replacement.
+    override func deleteBackward(_ sender: Any?) {
+        let selection = selectedRange()
+        guard selection.length == 0,
+              let dividerRanges = (layoutManager as? NootMarkdownLayoutManager)?.dividerRanges,
+              !dividerRanges.isEmpty
+        else {
+            super.deleteBackward(sender)
+            return
         }
+        let ns = string as NSString
+        if let divider = dividerRanges.first(where: { divider in
+            let end = NSMaxRange(divider)
+            guard end < selection.location else { return false }
+            let gap = NSRange(location: end, length: selection.location - end)
+            let separator = ns.substring(with: gap)
+            return separator == "\n" || separator == "\r" || separator == "\r\n"
+        }) {
+            insertText("", replacementRange: NSRange(location: divider.location,
+                                                       length: selection.location - divider.location))
+            return
+        }
+        super.deleteBackward(sender)
     }
 
     // ⌘Y: Quick Look the file link under the caret
@@ -564,7 +619,14 @@ struct MarkdownEditor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
-        let tv = NootTextView()
+        let storage = NootMarkdownTextStorage()
+        let layoutManager = NootMarkdownLayoutManager()
+        let textContainer = NootMarkdownTextContainer(
+            size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        )
+        storage.addLayoutManager(layoutManager)
+        layoutManager.addTextContainer(textContainer)
+        let tv = NootTextView(frame: .zero, textContainer: textContainer)
         tv.autoresizingMask = .width
         tv.isVerticallyResizable = true
         tv.isHorizontallyResizable = false
@@ -579,7 +641,6 @@ struct MarkdownEditor: NSViewRepresentable {
         scroll.scrollerInsets = NSEdgeInsets()
         scroll.scrollerStyle = .overlay // no permanent track — kills the bottom-right notch
         tv.delegate = context.coordinator
-        tv.layoutManager?.delegate = context.coordinator // forces TextKit 1; needed to hide syntax glyphs
         tv.isRichText = false
         tv.allowsUndo = true
         tv.drawsBackground = false
@@ -591,9 +652,10 @@ struct MarkdownEditor: NSViewRepresentable {
         tv.usesFindBar = true
         tv.isIncrementalSearchingEnabled = true
         tv.linkTextAttributes = [.cursor: NSCursor.pointingHand]
+        tv.setAccessibilityLabel("Note editor")
         tv.string = text
         gTextView = tv
-        context.coordinator.highlight(tv)
+        context.coordinator.refreshPresentation(tv)
         return scroll
     }
 
@@ -603,16 +665,15 @@ struct MarkdownEditor: NSViewRepresentable {
         let size = NotesStore.shared.fontSize
         if tv.string != text {
             tv.string = text
-            context.coordinator.highlight(tv)
+            context.coordinator.refreshPresentation(tv)
         } else if context.coordinator.lastFontSize != size {
-            context.coordinator.highlight(tv)
+            context.coordinator.refreshPresentation(tv)
         }
     }
 
-    final class Coordinator: NSObject, NSTextViewDelegate, NSLayoutManagerDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MarkdownEditor
         var lastFontSize: CGFloat = 0
-        var hiddenIndexes = IndexSet() // syntax-marker chars rendered as no glyph
         var lastPara = NSRange(location: NSNotFound, length: 0)
         init(_ parent: MarkdownEditor) { self.parent = parent }
 
@@ -620,7 +681,7 @@ struct MarkdownEditor: NSViewRepresentable {
             guard let tv = n.object as? NSTextView else { return }
             autoConvert(tv)
             parent.text = tv.string
-            highlight(tv)
+            refreshPresentation(tv)
         }
 
         // typing "[] ", "[ ] " or "[x] " at line start becomes a real task item "- [ ] "
@@ -649,7 +710,7 @@ struct MarkdownEditor: NSViewRepresentable {
             if caretLines(tv).location != lastPara.location {
                 DispatchQueue.main.async { [weak self, weak tv] in
                     guard let self, let tv else { return }
-                    self.highlight(tv)
+                    self.refreshPresentation(tv)
                 }
             }
         }
@@ -661,25 +722,6 @@ struct MarkdownEditor: NSViewRepresentable {
             sel.location = min(sel.location, ns.length)
             sel.length = min(sel.length, ns.length - sel.location)
             return ns.lineRange(for: sel)
-        }
-
-        func layoutManager(_ lm: NSLayoutManager,
-                           shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
-                           properties: UnsafePointer<NSLayoutManager.GlyphProperty>,
-                           characterIndexes: UnsafePointer<Int>,
-                           font: NSFont,
-                           forGlyphRange glyphRange: NSRange) -> Int {
-            guard !hiddenIndexes.isEmpty else { return 0 }
-            var props = Array(UnsafeBufferPointer(start: properties, count: glyphRange.length))
-            var changed = false
-            for i in 0 ..< glyphRange.length where hiddenIndexes.contains(characterIndexes[i]) {
-                props[i] = .null
-                changed = true
-            }
-            guard changed else { return 0 }
-            lm.setGlyphs(glyphs, properties: props, characterIndexes: characterIndexes,
-                         font: font, forGlyphRange: glyphRange)
-            return glyphRange.length
         }
 
         // esc hides the window; enter continues lists/checkboxes
@@ -811,145 +853,19 @@ struct MarkdownEditor: NSViewRepresentable {
             return true
         }
 
-        // ponytail: regexes recompiled per keystroke; fine at note size, cache if it ever lags
-        func highlight(_ tv: NSTextView) {
-            guard let storage = tv.textStorage else { return }
-            let str = tv.string
-            let ns = str as NSString
-            let full = NSRange(location: 0, length: ns.length)
+        func refreshPresentation(_ tv: NSTextView) {
+            guard let storage = tv.textStorage as? NootMarkdownTextStorage,
+                  let layoutManager = tv.layoutManager as? NootMarkdownLayoutManager
+            else { return }
             let size = NotesStore.shared.fontSize
             lastFontSize = size
-            let dim = NSColor.tertiaryLabelColor
-            let base: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: size),
-                .foregroundColor: NSColor.labelColor,
-            ]
-            storage.beginEditing()
-            storage.setAttributes(base, range: full)
-
-            func re(_ p: String, _ o: NSRegularExpression.Options = [.anchorsMatchLines],
-                    _ f: @escaping (NSTextCheckingResult) -> Void) {
-                guard let r = try? NSRegularExpression(pattern: p, options: o) else { return }
-                r.enumerateMatches(in: str, range: full) { m, _, _ in if let m { f(m) } }
-            }
-            func add(_ r: NSRange, _ a: [NSAttributedString.Key: Any]) {
-                if r.location != NSNotFound { storage.addAttributes(a, range: r) }
-            }
-
-            var hide: [NSRange] = [] // marker ranges to render glyph-less ("converted" look)
-            var dividers: [NSRange] = []
-
-            // headers: big font, hidden # marker
-            for (i, hSize) in [(1, size + 11), (2, size + 6), (3, size + 2)] {
-                let weight: NSFont.Weight = i == 3 ? .semibold : .bold
-                re("^(#{\(i)} )(.*)$") { m in
-                    add(m.range, [.font: NSFont.systemFont(ofSize: hSize, weight: weight)])
-                    add(m.range(at: 1), [.foregroundColor: dim])
-                    hide.append(m.range(at: 1))
-                }
-            }
-            // bold / italic / strikethrough with hidden markers
-            re("(\\*\\*)([^*\\n]+)(\\*\\*)") { m in
-                add(m.range(at: 2), [.font: NSFont.systemFont(ofSize: size, weight: .bold)])
-                add(m.range(at: 1), [.foregroundColor: dim])
-                add(m.range(at: 3), [.foregroundColor: dim])
-                hide.append(m.range(at: 1)); hide.append(m.range(at: 3))
-            }
-            let italic = NSFontManager.shared.convert(NSFont.systemFont(ofSize: size), toHaveTrait: .italicFontMask)
-            re("(?<![\\w*])(\\*)([^*\\n]+)(\\*)(?![\\w*])") { m in
-                add(m.range(at: 2), [.font: italic])
-                add(m.range(at: 1), [.foregroundColor: dim])
-                add(m.range(at: 3), [.foregroundColor: dim])
-                hide.append(m.range(at: 1)); hide.append(m.range(at: 3))
-            }
-            re("(~~)([^~\\n]+)(~~)") { m in
-                add(m.range(at: 2), [.strikethroughStyle: NSUnderlineStyle.single.rawValue])
-                add(m.range(at: 1), [.foregroundColor: dim])
-                add(m.range(at: 3), [.foregroundColor: dim])
-                hide.append(m.range(at: 1)); hide.append(m.range(at: 3))
-            }
-            // A standalone Markdown thematic break stays rendered even while
-            // its line has the caret; the source remains plain `---` on disk.
-            re("^[ \\t]*---[ \\t]*$") { m in dividers.append(m.range) }
-            // list markers
-            re("^\\s*(?:[-*+]|\\d+\\.)(?= )") { m in add(m.range, [.foregroundColor: accentNS]) }
-            // checkboxes (with or without a leading bullet): accent marker, clickable via fake link
-            re("^(\\s*(?:[-*+] )?)(\\[[ x]\\])(?= )") { m in
-                let box = m.range(at: 2)
-                add(box, [.foregroundColor: accentNS,
-                          .link: URL(string: "fncheck://\(box.location)")!])
-            }
-            re("^\\s*(?:[-*+] )?\\[x\\] (.*)$") { m in
-                add(m.range(at: 1), [.foregroundColor: NSColor.secondaryLabelColor,
-                                     .strikethroughStyle: NSUnderlineStyle.single.rawValue])
-            }
-            // quotes
-            re("^> .*$") { m in add(m.range, [.foregroundColor: NSColor.secondaryLabelColor]) }
-            // #tags: accent, click to filter the switcher ("# " headings don't match)
-            re("(?<![\\w#])#[\\p{L}\\d_][\\p{L}\\d_\\-]*") { m in
-                var attrs: [NSAttributedString.Key: Any] = [.foregroundColor: accentNS]
-                let tag = String(ns.substring(with: m.range).dropFirst())
-                if let enc = tag.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
-                   let url = URL(string: "noottag://\(enc)") {
-                    attrs[.link] = url
-                }
-                add(m.range, attrs)
-            }
-            // links + file/image attachments: [text](url), ![name](assets/x.png); brackets + target hidden
-            re("(!?\\[)([^\\]\\n]+)(\\]\\()([^)\\n]+)(\\))") { m in
-                add(m.range, [.foregroundColor: dim])
-                add(m.range(at: 2), [.foregroundColor: accentNS,
-                                     .underlineStyle: NSUnderlineStyle.single.rawValue])
-                if let url = linkURL(ns.substring(with: m.range(at: 4))) {
-                    add(m.range(at: 2), [.link: url])
-                }
-                for i in [1, 3, 4, 5] { hide.append(m.range(at: i)) }
-            }
-            re("(?<![(\\]])https?://[^\\s)]+") { m in
-                if let url = URL(string: ns.substring(with: m.range)) {
-                    add(m.range, [.foregroundColor: accentNS,
-                                  .underlineStyle: NSUnderlineStyle.single.rawValue, .link: url])
-                }
-            }
-            // inline code, then fenced blocks on top; backticks hidden
-            re("(`)([^`\\n]+)(`)") { m in
-                add(m.range, [.font: NSFont.monospacedSystemFont(ofSize: size - 1.5, weight: .regular),
-                              .foregroundColor: accentNS,
-                              .backgroundColor: NSColor.labelColor.withAlphaComponent(0.06)])
-                hide.append(m.range(at: 1)); hide.append(m.range(at: 3))
-            }
-            re("(```[a-zA-Z]*)([\\s\\S]*?)(```)", []) { m in
-                add(m.range, [.font: NSFont.monospacedSystemFont(ofSize: size - 1.5, weight: .regular),
-                              .foregroundColor: NSColor.labelColor,
-                              .backgroundColor: NSColor.labelColor.withAlphaComponent(0.06)])
-                hide.append(m.range(at: 1)); hide.append(m.range(at: 3))
-            }
-            storage.endEditing()
-            tv.typingAttributes = base
-            (tv as? NootTextView)?.dividerRanges = dividers
-
-            // hide syntax everywhere except the line(s) the caret is on
+            storage.refreshPresentation(fontSize: size)
+            tv.typingAttributes = storage.baseTypingAttributes
             let reveal = caretLines(tv)
             lastPara = reveal
-            let old = hiddenIndexes
-            hiddenIndexes = IndexSet()
-            for r in hide where r.location != NSNotFound && NSIntersectionRange(r, reveal).length == 0 {
-                hiddenIndexes.insert(integersIn: r.location ..< NSMaxRange(r))
-            }
-            for r in dividers where r.location != NSNotFound {
-                hiddenIndexes.insert(integersIn: r.location ..< NSMaxRange(r))
-            }
-            // invalidate only where hidden-state changed — full-range invalidation
-            // every keystroke is what made typing glitch
-            if let lm = tv.layoutManager {
-                for chunk in old.symmetricDifference(hiddenIndexes).rangeView {
-                    guard chunk.lowerBound < ns.length else { continue }
-                    let r = NSRange(location: chunk.lowerBound,
-                                    length: min(chunk.count, ns.length - chunk.lowerBound))
-                    lm.invalidateGlyphs(forCharacterRange: r, changeInLength: 0, actualCharacterRange: nil)
-                    lm.invalidateLayout(forCharacterRange: r, actualCharacterRange: nil)
-                }
-            }
+            layoutManager.updatePresentation(storage.presentation,
+                                             revealing: reveal,
+                                             textLength: storage.length)
         }
     }
 }
