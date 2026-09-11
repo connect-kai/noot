@@ -749,15 +749,35 @@ final class NootTextView: NSTextView {
     // travel it becomes a column selection (Sublime / VS Code column mode).
     private var middleDragAnchor: NSPoint?
 
+    private func textViewPoint(for event: NSEvent) -> NSPoint {
+        if event.window != nil {
+            let point = convert(event.locationInWindow, from: nil)
+            return point
+        }
+
+        // CGEvents created without a window report their location in global
+        // Quartz coordinates. Convert them back through the view's window.
+        guard let cgPoint = event.cgEvent?.location,
+              let window,
+              let screen = NSScreen.screens.first(where: {
+                  $0.frame.contains(NSPoint(x: cgPoint.x, y: $0.frame.maxY - cgPoint.y))
+              }) ?? NSScreen.main else {
+            return convert(event.locationInWindow, from: nil)
+        }
+        let screenPoint = NSPoint(x: cgPoint.x, y: screen.frame.maxY - cgPoint.y)
+        let windowPoint = window.convertPoint(fromScreen: screenPoint)
+        return convert(windowPoint, from: window.contentView)
+    }
+
     override func otherMouseDown(with event: NSEvent) {
-        guard event.buttonNumber == 2 else { return super.otherMouseDown(with: event) }
+        guard event.type == .otherMouseDown else { return super.otherMouseDown(with: event) }
         window?.makeFirstResponder(self)
-        middleDragAnchor = convert(event.locationInWindow, from: nil)
+        middleDragAnchor = textViewPoint(for: event)
     }
 
     override func otherMouseDragged(with event: NSEvent) {
         guard let anchor = middleDragAnchor else { return super.otherMouseDragged(with: event) }
-        applyColumnSelection(from: anchor, to: convert(event.locationInWindow, from: nil))
+        applyColumnSelection(from: anchor, to: textViewPoint(for: event))
     }
 
     override func otherMouseUp(with event: NSEvent) { middleDragAnchor = nil }

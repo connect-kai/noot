@@ -153,15 +153,15 @@ class EditorTestCase: XCTestCase {
 
     // MARK: mouse (middle button)
 
-    /// Real middle-button events (NSEvent.mouseEvent can't set the button; CGEvent can).
+    /// AppKit middle-button events associated with the test window.
     func middleDrag(from a: NSPoint, to b: NSPoint) {
-        func event(_ type: CGEventType, _ p: NSPoint) -> NSEvent {
+        func event(_ type: NSEvent.EventType, _ p: NSPoint) -> NSEvent {
             let inWindow = tv.convert(p, to: nil)
-            let screen = window.convertPoint(toScreen: inWindow)
-            let flipped = CGPoint(x: screen.x, y: NSScreen.screens[0].frame.height - screen.y)
-            let cg = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: flipped,
-                             mouseButton: .center)!
-            return NSEvent(cgEvent: cg)!
+            return NSEvent.mouseEvent(with: type,
+                                      location: inWindow,
+                                      modifierFlags: [], timestamp: 0,
+                                      windowNumber: window.windowNumber,
+                                      context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
         }
         tv.otherMouseDown(with: event(.otherMouseDown, a))
         tv.otherMouseDragged(with: event(.otherMouseDragged, b))
