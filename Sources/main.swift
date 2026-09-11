@@ -5,7 +5,6 @@ import ServiceManagement
 import Quartz
 
 let accent = Color(red: 1, green: 0.39, blue: 0.39) // raycast-ish #FF6363
-let accentNS = NSColor(red: 1, green: 0.39, blue: 0.39, alpha: 1)
 weak var gTextView: NSTextView?
 
 // The opening shortcut is stored as Carbon values because Carbon is still the
@@ -171,22 +170,30 @@ struct Note: Identifiable {
 }
 
 final class NotesStore: ObservableObject {
-    static let shared = NotesStore()
+    static var shared = NotesStore() // tests swap in a store on a temp folder
     let dir: URL
     @Published var notes: [Note] = []
     @Published var currentIndex = 0
     @Published var fontSize: CGFloat {
         didSet { UserDefaults.standard.set(fontSize, forKey: "fontSize") }
     }
+    // raw monospaced text, no Markdown styling or auto-formatting
+    @Published var codeMode = UserDefaults.standard.bool(forKey: "codeMode") {
+        didSet { UserDefaults.standard.set(codeMode, forKey: "codeMode") }
+    }
+    @Published var wordWrap = UserDefaults.standard.object(forKey: "wordWrap") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(wordWrap, forKey: "wordWrap") }
+    }
 
-    init() {
+    // ~/Noot: directly in $HOME, outside TCC's protected folders — no permission prompts,
+    // still user-visible plain files and covered by Time Machine
+    init(dir: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Noot"),
+         migrateLegacy: Bool = true) {
         let saved = UserDefaults.standard.double(forKey: "fontSize")
         fontSize = saved == 0 ? 15 : saved
-        // ~/Noot: directly in $HOME, outside TCC's protected folders — no permission prompts,
-        // still user-visible plain files and covered by Time Machine
-        dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Noot")
+        self.dir = dir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        migrateLegacyDirs()
+        if migrateLegacy { migrateLegacyDirs() }
         let files = ((try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
             .filter { $0.pathExtension == "md" }
@@ -350,6 +357,28 @@ func currentActions() -> [ActionItem] {
         ActionItem(id: "Delete Note", icon: "trash", keys: []) {
             if let n = s.current { s.delete(n) }
         },
+        ActionItem(id: "Code Mode", icon: "curlybraces", keys: ["⇧", "⌘", "M"]) { s.codeMode.toggle() },
+        ActionItem(id: "Sequence 1, 2, 3…", icon: "number", keys: []) {
+            (gTextView as? NootTextView)?.insertNumberSequence(nil)
+        },
+        ActionItem(id: "Sequence a, b, c…", icon: "textformat.abc", keys: []) {
+            (gTextView as? NootTextView)?.insertLetterSequence(nil)
+        },
+        ActionItem(id: "Paste Lines to Cursors", icon: "list.clipboard", keys: []) {
+            (gTextView as? NootTextView)?.pasteLinesToCursors(nil)
+        },
+        ActionItem(id: "Sort Lines A→Z", icon: "arrow.up.arrow.down", keys: []) {
+            (gTextView as? NootTextView)?.sortLinesAscending(nil)
+        },
+        ActionItem(id: "Sort Lines Z→A", icon: "arrow.up.arrow.down.square", keys: []) {
+            (gTextView as? NootTextView)?.sortLinesDescending(nil)
+        },
+        ActionItem(id: "Trim Trailing Whitespace", icon: "scissors", keys: []) {
+            (gTextView as? NootTextView)?.trimTrailingWhitespace(nil)
+        },
+        ActionItem(id: "Uppercase", icon: "textformat.size.larger", keys: []) { gTextView?.uppercaseWord(nil) },
+        ActionItem(id: "Lowercase", icon: "textformat.size.smaller", keys: []) { gTextView?.lowercaseWord(nil) },
+        ActionItem(id: "Word Wrap", icon: "text.word.spacing", keys: ["⌥", "Z"]) { s.wordWrap.toggle() },
         ActionItem(id: "Zoom In", icon: "plus.magnifyingglass", keys: ["⌘", "="]) {
             s.fontSize = min(s.fontSize + 1, 24)
         },
@@ -423,7 +452,7 @@ enum Fmt {
         guard let tv = gTextView else { return }
         let sel = tv.selectedRange()
         let text = (tv.string as NSString).substring(with: sel)
-        let clip = NSPasteboard.general.string(forType: .string) ?? ""
+        let clip = ((tv as? NootTextView)?.pasteboard ?? .general).string(forType: .string) ?? ""
         let url = clip.hasPrefix("http") ? clip : ""
         tv.insertText("[\(text)](\(url))", replacementRange: sel)
         if text.isEmpty {
@@ -465,6 +494,8 @@ final class QuickLooker: NSObject, QLPreviewPanelDataSource {
 
 // text view that accepts pasted/dropped images and files, copying them into assets/
 final class NootTextView: NSTextView {
+    var pasteboard = NSPasteboard.general // tests use a private one
+
     // Completing `---` at the start of an otherwise-empty line immediately
     // creates the block and advances into the following editable paragraph.
     // The newline remains in the Markdown source, but no extra Enter press is
@@ -482,7 +513,12 @@ final class NootTextView: NSTextView {
         let effectiveRange = replacementRange.location == NSNotFound
             ? selectedRange()
             : replacementRange
-        if insertedText == "-",
+        if let insertedText, effectiveRange == selectedRange(), !hasMarkedText(),
+           let ranges = multiCaretRanges() {
+            multiReplace(ranges, with: insertedText)
+            return
+        }
+        if insertedText == "-", !NotesStore.shared.codeMode,
            let completion = dividerCompletion(at: effectiveRange) {
             super.insertText(completion.text, replacementRange: completion.range)
             return
@@ -562,6 +598,16 @@ final class NootTextView: NSTextView {
     // Clicking it moves into the following editable line instead of leaving an
     // insertion point beside the hidden `---` source.
     override func mouseDown(with event: NSEvent) {
+        // ⌥-click adds a caret (VS Code). ⌥-drag stays the native column selection.
+        if event.modifierFlags.contains(.option), event.clickCount == 1 {
+            let before = selectedRanges.map(\.rangeValue), extras = extraCarets
+            super.mouseDown(with: event)
+            let now = selectedRange()
+            if now.length == 0, before.count == 1, before[0].length == 0, before[0].location != now.location {
+                setCarets(primary: now.location, extras: extras + [before[0].location])
+            }
+            return
+        }
         guard event.clickCount == 1,
               !event.modifierFlags.contains(.shift),
               let layoutManager = layoutManager as? NootMarkdownLayoutManager,
@@ -636,6 +682,379 @@ final class NootTextView: NSTextView {
         super.deleteBackward(sender)
     }
 
+    // MARK: Multiple carets
+    // NSTextView allows several selected ranges but only one empty one, and
+    // typing only touches the first. Extra zero-length carets live here; typing
+    // applies to all of them as one undoable edit, and caret commands (move*,
+    // delete*) are replayed per cursor in doCommand(by:).
+    // ponytail: paste, drag and mouse clicks without ⌥ drop the extra carets.
+    private(set) var extraCarets: [Int] = []
+    private var isSettingCarets = false
+
+    override func setSelectedRanges(_ ranges: [NSValue],
+                                    affinity: NSSelectionAffinity,
+                                    stillSelecting: Bool) {
+        if !isSettingCarets, !stillSelecting { rememberCursors() }
+        if !isSettingCarets, !extraCarets.isEmpty {
+            extraCarets = []
+            needsDisplay = true
+        }
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+    }
+
+    func setCarets(primary: Int, extras: [Int]) {
+        rememberCursors()
+        isSettingCarets = true
+        setSelectedRange(NSRange(location: primary, length: 0))
+        extraCarets = Array(Set(extras)).filter { $0 != primary }.sorted()
+        isSettingCarets = false
+        needsDisplay = true
+    }
+
+    // Ranges a typed string should replace: every selected range when there
+    // are several (⌘D / column selection), or every caret when extras exist.
+    private func multiCaretRanges() -> [NSRange]? {
+        let ranges = selectedRanges.map(\.rangeValue)
+        if ranges.count > 1 { return ranges }
+        if let primary = ranges.first, primary.length == 0, !extraCarets.isEmpty {
+            return ([primary.location] + extraCarets).sorted().map { NSRange(location: $0, length: 0) }
+        }
+        return nil
+    }
+
+    // `ranges` sorted and non-overlapping. Leaves a caret after each insertion.
+    func multiReplace(_ ranges: [NSRange], with text: String) {
+        multiReplace(ranges, with: Array(repeating: text, count: ranges.count))
+    }
+
+    func multiReplace(_ ranges: [NSRange], with texts: [String]) {
+        guard let textStorage, ranges.count == texts.count,
+              shouldChangeText(inRanges: ranges.map { NSValue(range: $0) }, replacementStrings: texts)
+        else { return }
+        textStorage.beginEditing()
+        for (range, text) in zip(ranges, texts).reversed() { textStorage.replaceCharacters(in: range, with: text) }
+        textStorage.endEditing()
+        didChangeText()
+        var carets: [Int] = [], delta = 0
+        for (range, text) in zip(ranges, texts) {
+            let length = (text as NSString).length
+            carets.append(range.location + delta + length)
+            delta += length - range.length
+        }
+        setCarets(primary: carets[0], extras: Array(carets.dropFirst()))
+        scrollRangeToVisible(selectedRange())
+    }
+
+    // Middle-button drag puts a caret on every line it crosses; with horizontal
+    // travel it becomes a column selection (Sublime / VS Code column mode).
+    private var middleDragAnchor: NSPoint?
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else { return super.otherMouseDown(with: event) }
+        window?.makeFirstResponder(self)
+        middleDragAnchor = convert(event.locationInWindow, from: nil)
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        guard let anchor = middleDragAnchor else { return super.otherMouseDragged(with: event) }
+        applyColumnSelection(from: anchor, to: convert(event.locationInWindow, from: nil))
+    }
+
+    override func otherMouseUp(with event: NSEvent) { middleDragAnchor = nil }
+
+    func applyColumnSelection(from a: NSPoint, to b: NSPoint) {
+        guard let layoutManager, let textContainer else { return }
+        let inset = textContainerInset
+        let top = min(a.y, b.y), bottom = max(a.y, b.y)
+        var ranges: [NSRange] = []
+        var glyph = layoutManager.glyphIndex(for: NSPoint(x: 0, y: top - inset.height), in: textContainer)
+        while glyph < layoutManager.numberOfGlyphs {
+            var lineGlyphs = NSRange()
+            let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &lineGlyphs)
+            if line.minY + inset.height > bottom { break }
+            let y = line.midY + inset.height
+            let start = characterIndexForInsertion(at: NSPoint(x: a.x, y: y))
+            let end = characterIndexForInsertion(at: NSPoint(x: b.x, y: y))
+            ranges.append(NSRange(location: min(start, end), length: abs(end - start)))
+            glyph = NSMaxRange(lineGlyphs)
+        }
+        let filled = ranges.filter { $0.length > 0 }
+        if filled.count > 1 {
+            selectedRanges = filled.map { NSValue(range: $0) }
+        } else if ranges.count == 1, let only = ranges.first {
+            setSelectedRange(only)
+        } else if let last = ranges.last {
+            setCarets(primary: last.location, extras: ranges.dropLast().map(\.location))
+        }
+    }
+
+    // MARK: Text Pastry: fill each cursor with the next item of a sequence
+
+    private func fillCarets(_ item: (Int) -> String) {
+        let ranges = multiCaretRanges() ?? [selectedRange()]
+        multiReplace(ranges, with: ranges.indices.map(item))
+    }
+
+    // 1, 2, 3… — or counting on from the selected number (⌘D on "0", then this)
+    @objc func insertNumberSequence(_ sender: Any?) {
+        let first = (string as NSString).substring(with: selectedRange()).trimmingCharacters(in: .whitespaces)
+        let start = Int(first) ?? 1
+        fillCarets { String(start + $0) }
+    }
+
+    @objc func insertLetterSequence(_ sender: Any?) {
+        fillCarets { String(UnicodeScalar(97 + $0 % 26)!) }
+    }
+
+    // clipboard line N goes to cursor N
+    @objc func pasteLinesToCursors(_ sender: Any?) {
+        let lines = (pasteboard.string(forType: .string) ?? "")
+            .components(separatedBy: .newlines).filter { !$0.isEmpty }
+        fillCarets { $0 < lines.count ? lines[$0] : "" }
+    }
+
+    // Every cursor runs the same caret command (arrows, ⌘←/→, ⌥⌫, ⌦ …). Commands
+    // that extend the selection turn the carets into a real multi-range selection.
+    override func doCommand(by selector: Selector) {
+        let name = NSStringFromSelector(selector)
+        guard name.hasPrefix("move") || name.hasPrefix("delete"),
+              let cursors = multiCaretRanges(), cursors.count > 1
+        else { return super.doCommand(by: selector) }
+        let primaryIndex = cursors.firstIndex(of: selectedRange()) ?? 0
+        extraCarets = [] // single-cursor behaviour while replaying
+        let edits = name.hasPrefix("delete")
+        if edits { undoManager?.beginUndoGrouping() }
+        var results: [NSRange] = [], delta = 0
+        for cursor in cursors {
+            let before = textStorage?.length ?? 0
+            setSelectedRange(NSRange(location: cursor.location + delta, length: cursor.length))
+            super.doCommand(by: selector)
+            results.append(selectedRange())
+            delta += (textStorage?.length ?? 0) - before
+        }
+        if edits { undoManager?.endUndoGrouping() }
+        if results.allSatisfy({ $0.length == 0 }) {
+            setCarets(primary: results[primaryIndex].location, extras: results.map(\.location))
+        } else {
+            selectRanges(results)
+        }
+    }
+
+    // Sorted and merged: NSTextView wants non-overlapping, non-contiguous ranges.
+    func selectRanges(_ ranges: [NSRange]) {
+        var merged: [NSRange] = []
+        for range in ranges.sorted(by: { $0.location < $1.location }) {
+            if let last = merged.last, range.location <= NSMaxRange(last) {
+                merged[merged.count - 1] = NSUnionRange(last, range)
+            } else {
+                merged.append(range)
+            }
+        }
+        let filled = merged.filter { $0.length > 0 }
+        if filled.count > 1 {
+            selectedRanges = filled.map { NSValue(range: $0) }
+        } else if let only = filled.first ?? merged.first {
+            setSelectedRange(only)
+        }
+    }
+
+    // ⌃⇧L: every occurrence of the selection (or the word at the caret)
+    @objc func selectAllOccurrences(_ sender: Any?) {
+        var sel = selectedRange()
+        if sel.length == 0 { sel = selectionRange(forProposedRange: sel, granularity: .selectByWord) }
+        guard sel.length > 0 else { return }
+        let ns = string as NSString
+        let needle = ns.substring(with: sel)
+        var ranges: [NSRange] = [], from = 0
+        while from < ns.length {
+            let found = ns.range(of: needle, range: NSRange(location: from, length: ns.length - from))
+            if found.location == NSNotFound { break }
+            ranges.append(found)
+            from = NSMaxRange(found)
+        }
+        selectRanges(ranges)
+    }
+
+    // ⌥+letter never reaches a menu key equivalent: the event carries the
+    // dead-key character (⌥I = ˆ, ⌥Z = Ω), so match these by key code here.
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        switch (flags, Int(event.keyCode)) {
+        case ([.option, .shift], kVK_ANSI_I): addCursorsToLineEnds(nil)
+        case ([.option], kVK_ANSI_Z): toggleWordWrap(nil)
+        default: super.keyDown(with: event)
+        }
+    }
+
+    // AppKit greys out Copy / Cut with no selection, which would stop ⌘C / ⌘X
+    // from reaching the whole-line versions below.
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(NSText.copy(_:)) { return true }
+        if item.action == #selector(NSText.cut(_:)) { return isEditable }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    // ⇧⌥I: a caret at the end of every selected line
+    @objc func addCursorsToLineEnds(_ sender: Any?) {
+        let ns = string as NSString
+        var ends: [Int] = []
+        ns.enumerateSubstrings(in: LineOps.lines(ns, selectedRange()),
+                               options: [.byLines, .substringNotRequired]) { _, range, _, _ in
+            ends.append(NSMaxRange(range))
+        }
+        guard let last = ends.last else { return }
+        setCarets(primary: last, extras: ends)
+    }
+
+    // ⌥⌘↓ / ⌥⌘↑: one more caret on the line below the lowest / above the highest
+    @objc func addCursorBelow(_ sender: Any?) { addCursor(#selector(NSResponder.moveDown(_:))) }
+    @objc func addCursorAbove(_ sender: Any?) { addCursor(#selector(NSResponder.moveUp(_:))) }
+
+    private func addCursor(_ move: Selector) {
+        let carets = [selectedRange().location] + extraCarets
+        let edge = move == #selector(NSResponder.moveDown(_:)) ? carets.max()! : carets.min()!
+        extraCarets = []
+        setSelectedRange(NSRange(location: edge, length: 0))
+        super.doCommand(by: move)
+        let ns = string as NSString
+        let moved = selectedRange().location
+        // at the first / last line AppKit jumps to the document edge: nothing to add
+        let onNewLine = ns.lineRange(for: NSRange(location: moved, length: 0))
+            != ns.lineRange(for: NSRange(location: edge, length: 0))
+        setCarets(primary: onNewLine ? moved : edge, extras: carets)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let window, !extraCarets.isEmpty else { return }
+        insertionPointColor.setFill()
+        for caret in extraCarets {
+            let screen = firstRect(forCharacterRange: NSRange(location: caret, length: 0), actualRange: nil)
+            let rect = convert(window.convertFromScreen(screen), from: nil)
+            NSRect(x: rect.minX, y: rect.minY, width: 1, height: rect.height).fill()
+        }
+    }
+
+    // MARK: VS Code-style editing (Edit menu key equivalents)
+
+    private func apply(_ edit: LineOps.Edit?) {
+        guard let edit else { return }
+        insertText(edit.text, replacementRange: edit.range)
+        setSelectedRange(edit.selection)
+        scrollRangeToVisible(edit.selection)
+    }
+
+    @objc func moveLineUp(_ sender: Any?) { apply(LineOps.move(string, selectedRange(), up: true)) }
+    @objc func moveLineDown(_ sender: Any?) { apply(LineOps.move(string, selectedRange(), up: false)) }
+    @objc func copyLineUp(_ sender: Any?) { apply(LineOps.copy(string, selectedRange(), up: true)) }
+    @objc func copyLineDown(_ sender: Any?) { apply(LineOps.copy(string, selectedRange(), up: false)) }
+    @objc func deleteLine(_ sender: Any?) { apply(LineOps.delete(string, selectedRange())) }
+    @objc func selectCurrentLine(_ sender: Any?) { setSelectedRange(LineOps.selectLine(string, selectedRange())) }
+
+    @objc func joinLines(_ sender: Any?) { apply(LineOps.join(string, selectedRange())) }
+    @objc func sortLinesAscending(_ sender: Any?) { apply(LineOps.sort(string, selectedRange(), descending: false)) }
+    @objc func sortLinesDescending(_ sender: Any?) { apply(LineOps.sort(string, selectedRange(), descending: true)) }
+    @objc func toggleComment(_ sender: Any?) {
+        apply(LineOps.toggleComment(string, selectedRange(), code: NotesStore.shared.codeMode))
+    }
+    @objc func toggleWordWrap(_ sender: Any?) { NotesStore.shared.wordWrap.toggle() }
+
+    @objc func trimTrailingWhitespace(_ sender: Any?) {
+        let ns = string as NSString
+        let regex = try! NSRegularExpression(pattern: "[ \\t]+$", options: .anchorsMatchLines)
+        let ranges = regex.matches(in: string, range: NSRange(location: 0, length: ns.length)).map(\.range)
+        guard !ranges.isEmpty else { return }
+        let caret = selectedRange().location
+        let removedBefore = ranges.filter { $0.location < caret }
+            .reduce(0) { $0 + min($1.length, caret - $1.location) }
+        multiReplace(ranges, with: "")
+        setSelectedRange(NSRange(location: caret - removedBefore, length: 0))
+    }
+
+    // ⌘C / ⌘X with nothing selected take the whole line (VS Code)
+    private var nothingSelected: Bool { selectedRange().length == 0 && selectedRanges.count == 1 }
+
+    override func copy(_ sender: Any?) {
+        pasteboard.clearContents()
+        if nothingSelected {
+            let ns = string as NSString
+            pasteboard.setString(ns.substring(with: ns.lineRange(for: selectedRange())), forType: .string)
+        } else {
+            writeSelection(to: pasteboard, types: writablePasteboardTypes)
+        }
+    }
+
+    override func cut(_ sender: Any?) {
+        let wholeLine = nothingSelected
+        copy(sender)
+        if wholeLine { deleteLine(sender) } else { delete(sender) }
+    }
+
+    // ⌘U: step back through earlier cursor sets (VS Code "cursor undo")
+    private var cursorHistory: [(ranges: [NSRange], extras: [Int])] = []
+    private var isRestoringCursors = false
+
+    private func rememberCursors() {
+        guard !isRestoringCursors else { return }
+        let snapshot = (ranges: selectedRanges.map(\.rangeValue), extras: extraCarets)
+        if let last = cursorHistory.last, last.ranges == snapshot.ranges, last.extras == snapshot.extras { return }
+        cursorHistory.append(snapshot)
+        if cursorHistory.count > 50 { cursorHistory.removeFirst() }
+    }
+
+    @objc func undoCursor(_ sender: Any?) {
+        let length = (string as NSString).length
+        guard let previous = cursorHistory.popLast() else { return }
+        let ranges = previous.ranges.filter { NSMaxRange($0) <= length }
+        let extras = previous.extras.filter { $0 <= length }
+        isRestoringCursors = true
+        defer { isRestoringCursors = false }
+        if ranges.count > 1 {
+            selectedRanges = ranges.map { NSValue(range: $0) }
+        } else if let only = ranges.first {
+            if extras.isEmpty { setSelectedRange(only) } else { setCarets(primary: only.location, extras: extras) }
+        }
+        scrollRangeToVisible(selectedRange())
+    }
+
+    @objc func insertLineBelow(_ sender: Any?) {
+        let ns = string as NSString
+        let line = ns.lineRange(for: selectedRange())
+        var end = NSMaxRange(line)
+        if end > line.location, ns.character(at: end - 1) == 10 { end -= 1 }
+        let inserted = "\n" + LineOps.indent(ofLineAt: line.location, in: string)
+        insertText(inserted, replacementRange: NSRange(location: end, length: 0))
+        setSelectedRange(NSRange(location: end + (inserted as NSString).length, length: 0))
+    }
+
+    @objc func insertLineAbove(_ sender: Any?) {
+        let line = (string as NSString).lineRange(for: selectedRange())
+        let indent = LineOps.indent(ofLineAt: line.location, in: string)
+        insertText(indent + "\n", replacementRange: NSRange(location: line.location, length: 0))
+        setSelectedRange(NSRange(location: line.location + (indent as NSString).length, length: 0))
+    }
+
+    // ⌘D: select the word under the caret, then add the next occurrence on each
+    // press. Typing then goes through multiReplace and edits every range.
+    @objc func addNextOccurrence(_ sender: Any?) {
+        var ranges = selectedRanges.map(\.rangeValue)
+        guard let last = ranges.last else { return }
+        if last.length == 0 {
+            let word = selectionRange(forProposedRange: last, granularity: .selectByWord)
+            if word.length > 0 { setSelectedRange(word) }
+            return
+        }
+        let ns = string as NSString
+        let needle = ns.substring(with: last)
+        var found = ns.range(of: needle, range: NSRange(location: NSMaxRange(last), length: ns.length - NSMaxRange(last)))
+        if found.location == NSNotFound { found = ns.range(of: needle, range: NSRange(location: 0, length: ns.length)) }
+        guard found.location != NSNotFound, !ranges.contains(found) else { return }
+        ranges.append(found)
+        ranges.sort { $0.location < $1.location }
+        selectedRanges = ranges.map { NSValue(range: $0) }
+        scrollRangeToVisible(found)
+    }
+
     // ⌘Y: Quick Look the file link under the caret
     @objc func quickLookLink(_ sender: Any?) {
         guard let storage = textStorage, storage.length > 0 else { return }
@@ -649,7 +1068,7 @@ final class NootTextView: NSTextView {
     }
 
     override func paste(_ sender: Any?) {
-        let pb = NSPasteboard.general
+        let pb = pasteboard
         if let urls = pb.readObjects(forClasses: [NSURL.self],
                                      options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
             insertAssets(urls)
@@ -732,6 +1151,20 @@ struct MarkdownEditor: NSViewRepresentable {
         tv.textContainer?.widthTracksTextView = true
         tv.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         scroll.documentView = tv
+        scroll.hasVerticalRuler = true
+        scroll.verticalRulerView = LineNumberRuler(textView: tv, scrollView: scroll)
+        scroll.rulersVisible = NotesStore.shared.codeMode
+        context.coordinator.applyWordWrap(tv, scroll)
+        // A click below the last line must still land in the editor: keep the
+        // text view at least as tall as the visible area.
+        let clip = scroll.contentView
+        context.coordinator.clipObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: clip, queue: .main
+        ) { [weak tv, weak clip] _ in
+            guard let tv, let clip else { return }
+            tv.minSize = NSSize(width: 0, height: clip.bounds.height)
+            tv.sizeToFit()
+        }
         scroll.hasVerticalScroller = true
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentInsets = NSEdgeInsets()
@@ -756,6 +1189,12 @@ struct MarkdownEditor: NSViewRepresentable {
         return scroll
     }
 
+    // The scroll view must never size the panel: with word wrap off its fitting
+    // width follows the longest line and pushed the toolbar past the window.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions(by: CGSize(width: 480, height: 320))
+    }
+
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         let tv = scroll.documentView as! NSTextView
@@ -763,22 +1202,51 @@ struct MarkdownEditor: NSViewRepresentable {
         if tv.string != text {
             tv.string = text
             context.coordinator.refreshPresentation(tv)
-        } else if context.coordinator.lastFontSize != size {
+        } else if context.coordinator.lastFontSize != size
+                    || context.coordinator.lastCodeMode != NotesStore.shared.codeMode {
             context.coordinator.refreshPresentation(tv)
+        }
+        scroll.rulersVisible = NotesStore.shared.codeMode
+        if context.coordinator.lastWordWrap != NotesStore.shared.wordWrap {
+            context.coordinator.applyWordWrap(tv, scroll)
         }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MarkdownEditor
         var lastFontSize: CGFloat = 0
+        var lastCodeMode = false
         var lastPara = NSRange(location: NSNotFound, length: 0)
         var lastSelectionLocation = 0
         var isNormalizingDividerSelection = false
+        var clipObserver: Any?
+        var lastWordWrap = true
         init(_ parent: MarkdownEditor) { self.parent = parent }
+        deinit { clipObserver.map(NotificationCenter.default.removeObserver) }
+
+        // ⌥Z: wrap at the panel width, or one long line per paragraph with a horizontal scroller
+        func applyWordWrap(_ tv: NSTextView, _ scroll: NSScrollView) {
+            let wrap = NotesStore.shared.wordWrap
+            lastWordWrap = wrap
+            guard let container = tv.textContainer else { return }
+            let huge = CGFloat.greatestFiniteMagnitude
+            tv.isHorizontallyResizable = !wrap
+            container.widthTracksTextView = wrap
+            scroll.hasHorizontalScroller = !wrap
+            if wrap {
+                tv.setFrameSize(NSSize(width: scroll.contentSize.width, height: tv.frame.height))
+                container.containerSize = NSSize(width: scroll.contentSize.width - 2 * tv.textContainerInset.width,
+                                                 height: huge)
+            } else {
+                container.containerSize = NSSize(width: huge, height: huge)
+            }
+            tv.sizeToFit()
+            tv.needsDisplay = true
+        }
 
         func textDidChange(_ n: Notification) {
             guard let tv = n.object as? NSTextView else { return }
-            autoConvert(tv)
+            if !NotesStore.shared.codeMode { autoConvert(tv) }
             parent.text = tv.string
             refreshPresentation(tv)
         }
@@ -936,6 +1404,10 @@ struct MarkdownEditor: NSViewRepresentable {
             let ns = tv.string as NSString
             let sel = tv.selectedRange()
             guard sel.location != NSNotFound else { return false }
+            if NotesStore.shared.codeMode { // keep the current line's indentation, nothing else
+                tv.insertText("\n" + LineOps.indent(ofLineAt: sel.location, in: tv.string), replacementRange: sel)
+                return true
+            }
             let lineRange = ns.lineRange(for: NSRange(location: sel.location, length: 0))
             var line = ns.substring(with: lineRange)
             if line.hasSuffix("\n") { line.removeLast() }
@@ -988,8 +1460,10 @@ struct MarkdownEditor: NSViewRepresentable {
             else { return }
             let size = NotesStore.shared.fontSize
             lastFontSize = size
-            storage.refreshPresentation(fontSize: size)
+            lastCodeMode = NotesStore.shared.codeMode
+            storage.refreshPresentation(fontSize: size, plain: lastCodeMode)
             tv.typingAttributes = storage.baseTypingAttributes
+            (tv.enclosingScrollView?.verticalRulerView as? LineNumberRuler)?.refresh()
             let reveal = caretLines(tv)
             lastPara = reveal
             layoutManager.updatePresentation(storage.presentation,
@@ -1161,6 +1635,7 @@ struct ContentView: View {
             }
             if ui.overlay == .actions {
                 HStack { Spacer(); actionsOverlay }
+                    .padding(.top, 8) // so the list can never grow past the panel when it is small
             }
         }
         .frame(minWidth: 480, minHeight: 320)
@@ -1263,6 +1738,9 @@ struct ContentView: View {
             tb("link", "Link  ⌘⇧L") { Fmt.link() }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
             Spacer()
+            tb("curlybraces", "Code Mode  ⌘⇧M") { store.codeMode.toggle(); focusEditor() }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .foregroundStyle(store.codeMode ? accent : Color.secondary)
         }
         .foregroundStyle(.secondary)
         .padding(.horizontal, 10)
@@ -1369,23 +1847,30 @@ struct ContentView: View {
     }
 
     var actionsOverlay: some View {
-        VStack(spacing: 1) {
-            ForEach(Array(currentActions().enumerated()), id: \.element.id) { i, action in
-                HStack(spacing: 8) {
-                    Image(systemName: action.icon).frame(width: 16)
-                    Text(action.id)
-                    Spacer()
-                    HStack(spacing: 2) { ForEach(action.keys, id: \.self) { kbd($0) } }
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 1) {
+                    ForEach(Array(currentActions().enumerated()), id: \.element.id) { i, action in
+                        HStack(spacing: 8) {
+                            Image(systemName: action.icon).frame(width: 16)
+                            Text(action.id)
+                            Spacer()
+                            HStack(spacing: 2) { ForEach(action.keys, id: \.self) { kbd($0) } }
+                        }
+                        .padding(.vertical, 5).padding(.horizontal, 8)
+                        .background(i == ui.selIndex ? Color.primary.opacity(0.1) : .clear,
+                                    in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
+                        .onTapGesture { action.run(); ui.overlay = nil; focusEditor() }
+                        .id(i)
+                    }
                 }
-                .padding(.vertical, 5).padding(.horizontal, 8)
-                .background(i == ui.selIndex ? Color.primary.opacity(0.1) : .clear,
-                            in: RoundedRectangle(cornerRadius: 6))
-                .contentShape(Rectangle())
-                .onTapGesture { action.run(); ui.overlay = nil; focusEditor() }
+                .frame(width: 228) // rows fill the overlay instead of taking their ideal width
+                .padding(6)
             }
+            .frame(maxHeight: 300) // the list outgrew the panel; keep the arrow-key selection in view
+            .onChange(of: ui.selIndex) { i in proxy.scrollTo(i) }
         }
-        .padding(6)
-        .frame(width: 240)
         .overlayChrome()
     }
 }
@@ -2071,8 +2556,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.tag = Int(action.rawValue)
             edit.addItem(item)
         }
+        let replace = NSMenuItem(title: "Find and Replace…",
+                                 action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
+        replace.keyEquivalentModifierMask = [.command, .option]
+        replace.tag = Int(NSTextFinder.Action.showReplaceInterface.rawValue)
+        edit.addItem(replace)
         edit.addItem(.separator())
         edit.addItem(withTitle: "Quick Look", action: #selector(NootTextView.quickLookLink(_:)), keyEquivalent: "y")
+        edit.addItem(.separator())
+        let up = String(utf16CodeUnits: [unichar(NSUpArrowFunctionKey)], count: 1)
+        let down = String(utf16CodeUnits: [unichar(NSDownArrowFunctionKey)], count: 1)
+        let codeItems: [(String, Selector, String, NSEvent.ModifierFlags)] = [
+            ("Join Lines", #selector(NootTextView.joinLines(_:)), "j", .control),
+            ("Toggle Comment", #selector(NootTextView.toggleComment(_:)), "/", .command),
+            ("Toggle Word Wrap", #selector(NootTextView.toggleWordWrap(_:)), "z", .option),
+            ("Cursor Undo", #selector(NootTextView.undoCursor(_:)), "u", .command),
+            ("Add Next Occurrence", #selector(NootTextView.addNextOccurrence(_:)), "d", .command),
+            ("Select All Occurrences", #selector(NootTextView.selectAllOccurrences(_:)), "l", [.control, .shift]), // ⌘⇧L stays Link
+            ("Add Cursors to Line Ends", #selector(NootTextView.addCursorsToLineEnds(_:)), "i", [.option, .shift]),
+            ("Add Cursor Below", #selector(NootTextView.addCursorBelow(_:)), down, [.command, .option]),
+            ("Add Cursor Above", #selector(NootTextView.addCursorAbove(_:)), up, [.command, .option]),
+            ("Select Line", #selector(NootTextView.selectCurrentLine(_:)), "l", .command),
+            ("Delete Line", #selector(NootTextView.deleteLine(_:)), "k", [.command, .shift]),
+            ("Insert Line Below", #selector(NootTextView.insertLineBelow(_:)), "\r", .command),
+            ("Insert Line Above", #selector(NootTextView.insertLineAbove(_:)), "\r", [.command, .shift]),
+            ("Move Line Up", #selector(NootTextView.moveLineUp(_:)), up, .option),
+            ("Move Line Down", #selector(NootTextView.moveLineDown(_:)), down, .option),
+            ("Copy Line Up", #selector(NootTextView.copyLineUp(_:)), up, [.option, .shift]),
+            ("Copy Line Down", #selector(NootTextView.copyLineDown(_:)), down, [.option, .shift]),
+        ]
+        for (title, action, key, mask) in codeItems {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = mask
+            edit.addItem(item)
+        }
         holder.submenu = edit
         NSApp.mainMenu = main
     }

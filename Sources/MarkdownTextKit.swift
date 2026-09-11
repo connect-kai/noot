@@ -1,6 +1,9 @@
 import AppKit
 import Markdown
 
+// Lives here rather than in main.swift so it is initialized under `swift test` too.
+let accentNS = NSColor(red: 1, green: 0.39, blue: 0.39, alpha: 1) // raycast-ish #FF6363
+
 // MARK: - Markdown presentation model
 
 enum NootMarkdownRole {
@@ -322,6 +325,7 @@ final class NootMarkdownTextStorage: NSTextStorage {
     private let backingStore = NSMutableAttributedString()
     private(set) var presentation = NootMarkdownPresentation()
     private(set) var fontSize: CGFloat = 0
+    private var baseFont = NSFont.systemFont(ofSize: NSFont.systemFontSize)
 
     override var string: String { backingStore.string }
 
@@ -345,21 +349,29 @@ final class NootMarkdownTextStorage: NSTextStorage {
         endEditing()
     }
 
-    func refreshPresentation(fontSize: CGFloat) {
+    // `plain` is code mode: monospaced, no Markdown styling, nothing hidden.
+    func refreshPresentation(fontSize: CGFloat, plain: Bool = false) {
         let source = string
         let full = NSRange(location: 0, length: (source as NSString).length)
+        self.fontSize = fontSize
+        baseFont = plain
+            ? NSFont.monospacedSystemFont(ofSize: fontSize - 1, weight: .regular)
+            : NSFont.systemFont(ofSize: fontSize)
+        if plain {
+            presentation = NootMarkdownPresentation()
+            beginEditing()
+            backingStore.setAttributes(baseTypingAttributes, range: full)
+            edited(.editedAttributes, range: full, changeInLength: 0)
+            endEditing()
+            return
+        }
         var walker = NootMarkdownWalker(source: source)
         walker.visit(Document(parsing: source))
         presentation = walker.presentation
         preserveStandaloneNootDividers(in: source, fullRange: full)
-        self.fontSize = fontSize
 
-        let base: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: fontSize),
-            .foregroundColor: NSColor.labelColor,
-        ]
         beginEditing()
-        backingStore.setAttributes(base, range: full)
+        backingStore.setAttributes(baseTypingAttributes, range: full)
         applySemanticAttributes(fontSize: fontSize)
         for range in presentation.dimmedSyntaxRanges where valid(range) {
             backingStore.addAttribute(.foregroundColor,
@@ -372,10 +384,7 @@ final class NootMarkdownTextStorage: NSTextStorage {
     }
 
     var baseTypingAttributes: [NSAttributedString.Key: Any] {
-        [
-            .font: NSFont.systemFont(ofSize: fontSize),
-            .foregroundColor: NSColor.labelColor,
-        ]
+        [.font: baseFont, .foregroundColor: NSColor.labelColor]
     }
 
     private func applySemanticAttributes(fontSize: CGFloat) {

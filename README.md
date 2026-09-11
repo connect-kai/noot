@@ -68,6 +68,18 @@ Grant the one permission macOS asks for:
 | ⌘= / ⌘- | Zoom |
 | ⌘F / ⌘G | Find in note / find next |
 | ⌘Y | Quick Look attachment under caret |
+| ⌘⇧M | Code mode: raw monospaced text, no Markdown styling or auto-formatting |
+| ⌘D / ⌃⇧L | Select word, add next occurrence / select all occurrences (typing then edits every selection) |
+| ⌥⌘↑ ⌥⌘↓ / ⇧⌥I | Add cursor above / below; a cursor at the end of every selected line |
+| ⌥-click / middle-drag | Add a caret / a caret on every line crossed; ⌥-drag / ⌘-drag select columns / several ranges |
+| ⌘K → Sequence 1, 2, 3… / a, b, c… / Paste Lines to Cursors | Text Pastry: fill each cursor with the next number, letter, or clipboard line |
+| ⌘L / ⌘⇧K | Select line / delete line |
+| ⌥↑ ⌥↓ / ⌥⇧↑ ⌥⇧↓ | Move line / copy line |
+| ⌘↩ / ⌘⇧↩ | Insert line below / above |
+| ⌘X / ⌘C with no selection | Cut / copy the whole line |
+| ⌃J / ⌘/ / ⌘U | Join lines / toggle comment (`<!-- -->`, `//` in code mode) / cursor undo |
+| ⌥⌘F / ⌥Z | Find and replace / word wrap |
+| ⌘K → Sort Lines, Trim Trailing Whitespace, Uppercase, Lowercase | Whole note, or the selected lines |
 | esc / ⌘W | Hide panel |
 
 The menu-bar menu can record a different opening shortcut, switch the double-tap

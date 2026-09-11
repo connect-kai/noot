@@ -11,6 +11,7 @@ let package = Package(
         .executableTarget(
             name: "Noot",
             dependencies: [.product(name: "Markdown", package: "swift-markdown")],
-            path: "Sources")
+            path: "Sources"),
+        .testTarget(name: "NootTests", dependencies: ["Noot"], path: "Tests"),
     ]
 )
