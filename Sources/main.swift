@@ -172,6 +172,7 @@ struct Note: Identifiable {
 final class NotesStore: ObservableObject {
     static var shared = NotesStore() // tests swap in a store on a temp folder
     let dir: URL
+    private let repository: NootNotesRepository
     @Published var notes: [Note] = []
     @Published var currentIndex = 0
     @Published var fontSize: CGFloat {
@@ -192,6 +193,7 @@ final class NotesStore: ObservableObject {
         let saved = UserDefaults.standard.double(forKey: "fontSize")
         fontSize = saved == 0 ? 15 : saved
         self.dir = dir
+        self.repository = NootNotesRepository(directory: dir)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         if migrateLegacy { migrateLegacyDirs() }
         let files = ((try? FileManager.default.contentsOfDirectory(
@@ -237,9 +239,10 @@ final class NotesStore: ObservableObject {
     var current: Note? { notes.indices.contains(currentIndex) ? notes[currentIndex] : nil }
 
     func newNote(initial: String = "") {
-        let url = dir.appendingPathComponent(UUID().uuidString + ".md")
-        try? initial.write(to: url, atomically: true, encoding: .utf8)
-        notes.insert(Note(url: url, text: initial, lastEdited: Date()), at: 0)
+        let title = UUID().uuidString
+        guard let document = try? repository.create(title: title, source: initial) else { return }
+        let url = repository.fileURL(for: document.id)
+        notes.insert(Note(url: url, text: document.source, lastEdited: Date()), at: 0)
         currentIndex = 0
     }
 
@@ -247,12 +250,24 @@ final class NotesStore: ObservableObject {
         guard notes.indices.contains(currentIndex) else { return }
         notes[currentIndex].text = text
         notes[currentIndex].lastEdited = Date()
-        // ponytail: write on every keystroke; debounce if files ever get huge
-        try? text.write(to: notes[currentIndex].url, atomically: true, encoding: .utf8)
+        // The repository owns the atomic write boundary; debounce belongs to the new store.
+        let id = NootNoteID(rawValue: notes[currentIndex].url.lastPathComponent)
+        try? repository.save(id: id, source: text)
     }
 
     func select(_ note: Note) {
         if let i = notes.firstIndex(where: { $0.id == note.id }) { currentIndex = i }
+    }
+
+    /// Tinycast-style title/content search backed by the repository's ranked matcher.
+    func matchingNotes(query: String) -> [Note] {
+        let sorted = notes.sorted { $0.lastEdited > $1.lastEdited }
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let summaries = try? repository.list()
+        else { return sorted }
+        let ranked = repository.search(query, summaries: summaries)
+        let byID = Dictionary(uniqueKeysWithValues: notes.map { ($0.url.lastPathComponent, $0) })
+        return ranked.compactMap { byID[$0.summary.id.rawValue] }
     }
 
     func openDaily() {
@@ -329,10 +344,7 @@ final class UIState: ObservableObject {
 }
 
 func filteredNotes() -> [Note] {
-    let q = UIState.shared.query.lowercased()
-    let sorted = NotesStore.shared.notes.sorted { $0.lastEdited > $1.lastEdited }
-    guard !q.isEmpty else { return sorted }
-    return sorted.filter { $0.title.lowercased().contains(q) || $0.text.lowercased().contains(q) }
+    NotesStore.shared.matchingNotes(query: UIState.shared.query)
 }
 
 struct ActionItem: Identifiable {
@@ -398,6 +410,20 @@ enum Fmt {
     // toggle inline markers around the selection, e.g. **bold**
     static func wrap(_ marker: String, _ suffixMarker: String? = nil) {
         guard let tv = gTextView else { return }
+        if let editor = tv as? NootTextView {
+            let action: NoteEditAction?
+            switch marker {
+            case "**": action = .toggleInline(.bold)
+            case "*", "_": action = .toggleInline(.italic)
+            case "~~": action = .toggleInline(.strikethrough)
+            case "`": action = .toggleInline(.code)
+            default: action = nil
+            }
+            if let action, editor.applyMarkdown(action) {
+                focusEditor()
+                return
+            }
+        }
         let suffix = suffixMarker ?? marker
         let ns = tv.string as NSString
         let sel = tv.selectedRange()
@@ -423,6 +449,23 @@ enum Fmt {
     // toggle a line-start marker (headers, lists, quotes) on every selected line
     static func linePrefix(_ marker: String, header: Bool = false) {
         guard let tv = gTextView else { return }
+        if let editor = tv as? NootTextView {
+            let action: NoteEditAction?
+            if header {
+                action = .setHeading(level: max(0, marker.dropLast().count))
+            } else {
+                switch marker {
+                case "- ": action = .toggleList(.bullet)
+                case "- [ ] ": action = .toggleList(.task)
+                case "> ": action = .toggleQuote
+                default: action = nil
+                }
+            }
+            if let action, editor.applyMarkdown(action) {
+                focusEditor()
+                return
+            }
+        }
         let ns = tv.string as NSString
         let lines = ns.lineRange(for: tv.selectedRange())
         var block = ns.substring(with: lines)
@@ -454,6 +497,11 @@ enum Fmt {
         let text = (tv.string as NSString).substring(with: sel)
         let clip = ((tv as? NootTextView)?.pasteboard ?? .general).string(forType: .string) ?? ""
         let url = clip.hasPrefix("http") ? clip : ""
+        if let editor = tv as? NootTextView, !url.isEmpty,
+           editor.applyMarkdown(.pasteURL(url)) {
+            focusEditor()
+            return
+        }
         tv.insertText("[\(text)](\(url))", replacementRange: sel)
         if text.isEmpty {
             tv.setSelectedRange(NSRange(location: sel.location + 1, length: 0))
@@ -495,6 +543,21 @@ final class QuickLooker: NSObject, QLPreviewPanelDataSource {
 // text view that accepts pasted/dropped images and files, copying them into assets/
 final class NootTextView: NSTextView {
     var pasteboard = NSPasteboard.general // tests use a private one
+
+    @discardableResult
+    func applyMarkdown(_ action: NoteEditAction) -> Bool {
+        guard !NotesStore.shared.codeMode, extraCarets.isEmpty else { return false }
+        let source = string
+        let selection = selectedRange()
+        let markdown = NoteMarkdownParser.parse(source)
+        guard let plan = NoteMarkdownEditing.plan(action, source: source,
+                                                   selection: selection, markdown: markdown)
+        else { return false }
+        insertText(plan.replacement, replacementRange: plan.range)
+        setSelectedRange(plan.selection)
+        scrollRangeToVisible(plan.selection)
+        return true
+    }
 
     // Completing `---` at the start of an otherwise-empty line immediately
     // creates the block and advances into the following editable paragraph.
@@ -679,6 +742,7 @@ final class NootTextView: NSTextView {
                                                        length: selection.location - divider.location))
             return
         }
+        if applyMarkdown(.deleteBackward) { return }
         super.deleteBackward(sender)
     }
 
@@ -1348,12 +1412,20 @@ struct MarkdownEditor: NSViewRepresentable {
                 return true
             }
             if sel == #selector(NSResponder.insertTab(_:)) {
+                if let editor = tv as? NootTextView,
+                   editor.applyMarkdown(.indent) { return true }
                 return changeIndentation(tv, outdent: false)
             }
             if sel == #selector(NSResponder.insertBacktab(_:)) {
+                if let editor = tv as? NootTextView,
+                   editor.applyMarkdown(.outdent) { return true }
                 return changeIndentation(tv, outdent: true)
             }
-            if sel == #selector(NSResponder.insertNewline(_:)) { return continueList(tv) }
+            if sel == #selector(NSResponder.insertNewline(_:)) {
+                if let editor = tv as? NootTextView,
+                   editor.applyMarkdown(.newline) { return true }
+                return continueList(tv)
+            }
             return false
         }
 
@@ -1631,6 +1703,7 @@ struct ContentView: View {
     @ObservedObject var store = NotesStore.shared
     @ObservedObject var ui = UIState.shared
     @State private var hoveredNote: URL?
+    @State private var headingMenuPresented = false
 
     var textBinding: Binding<String> {
         Binding(get: { store.current?.text ?? "" }, set: { store.update(text: $0) })
@@ -1639,6 +1712,8 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
+                titleBar
+                Divider().opacity(0.28)
                 toolbar
                 Divider().opacity(0.35)
                 MarkdownEditor(text: textBinding)
@@ -1672,6 +1747,48 @@ struct ContentView: View {
             ui.selIndex = 0
             ui.overlay = kind
         }
+    }
+
+    /// Tinycast-style title band: the note identity stays visible while the editor owns the space below.
+    var titleBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "text.page")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(accent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(store.current?.title ?? "Notes")
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Text(store.current == nil ? "No note selected" : "Markdown note")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+            titleButton("magnifyingglass", "Search notes") { toggleOverlay(.switcher) }
+                .keyboardShortcut("p", modifiers: .command)
+            titleButton("plus", "New note") { store.newNote(); focusEditor() }
+                .keyboardShortcut("n", modifiers: .command)
+            titleButton("ellipsis.circle", "Actions") { toggleOverlay(.actions) }
+                .keyboardShortcut("k", modifiers: .command)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background(Color.primary.opacity(0.025))
+    }
+
+    private func titleButton(
+        _ symbol: String, _ help: String, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 27, height: 24)
+                .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(help)
     }
 
     // arrow keys / enter / esc for the overlays, whatever has focus
@@ -1732,12 +1849,40 @@ struct ContentView: View {
 
     var toolbar: some View {
         HStack(spacing: 2) {
-            tb("H1", symbol: false, "Heading 1  ⌥⌘1") { Fmt.linePrefix("# ", header: true) }
-                .keyboardShortcut("1", modifiers: [.command, .option])
-            tb("H2", symbol: false, "Heading 2  ⌥⌘2") { Fmt.linePrefix("## ", header: true) }
-                .keyboardShortcut("2", modifiers: [.command, .option])
-            tb("H3", symbol: false, "Heading 3  ⌥⌘3") { Fmt.linePrefix("### ", header: true) }
-                .keyboardShortcut("3", modifiers: [.command, .option])
+            Button { headingMenuPresented.toggle() } label: {
+                HStack(spacing: 3) {
+                    Text("Aa").font(.system(size: 12, weight: .semibold))
+                    Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold))
+                }
+                .frame(width: 38, height: 22)
+            }
+            .buttonStyle(.plain)
+            .help("Text style")
+            .popover(isPresented: $headingMenuPresented, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(0..<7, id: \.self) { level in
+                        Button {
+                            if let editor = gTextView as? NootTextView {
+                                _ = editor.applyMarkdown(.setHeading(level: level))
+                            }
+                            headingMenuPresented = false
+                            focusEditor()
+                        } label: {
+                            HStack {
+                                Text(level == 0 ? "Normal text" : "Heading \(level)")
+                                    .font(.system(size: level == 0 ? 12 : CGFloat(17 - min(level, 5)),
+                                                  weight: level == 0 ? .regular : .semibold))
+                                Spacer()
+                                Text(level == 0 ? "⌥⌘0" : (level <= 3 ? "⌥⌘\(level)" : ""))
+                                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .frame(width: 190)
+                            .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                    }
+                }.padding(5)
+            }
             Divider().frame(height: 13).padding(.horizontal, 4)
             tb("bold", "Bold  ⌘B") { Fmt.wrap("**") }
                 .keyboardShortcut("b", modifiers: .command)
@@ -1763,8 +1908,9 @@ struct ContentView: View {
                 .foregroundStyle(store.codeMode ? accent : Color.secondary)
         }
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Color.primary.opacity(0.018))
         .overlay(HeaderMenuPresenter())
     }
 
@@ -1804,6 +1950,12 @@ struct ContentView: View {
 
     var hiddenShortcuts: some View {
         Group {
+            Button("") { Fmt.linePrefix("# ", header: true) }
+                .keyboardShortcut("1", modifiers: [.command, .option])
+            Button("") { Fmt.linePrefix("## ", header: true) }
+                .keyboardShortcut("2", modifiers: [.command, .option])
+            Button("") { Fmt.linePrefix("### ", header: true) }
+                .keyboardShortcut("3", modifiers: [.command, .option])
             Button("") { store.newNote(); ui.overlay = nil; focusEditor() }
                 .keyboardShortcut("n", modifiers: .command)
             Button("") { store.openDaily(); ui.overlay = nil; focusEditor() }
@@ -1862,7 +2014,7 @@ struct ContentView: View {
             }
             .frame(maxHeight: 250)
         }
-        .frame(width: 280)
+        .frame(width: 360)
         .overlayChrome()
     }
 
@@ -1955,7 +2107,7 @@ struct RootView: View {
 
 // MARK: - Panel + app
 
-final class NotesPanel: NSPanel {
+final class LegacyNotesPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override func cancelOperation(_ sender: Any?) { orderOut(nil) }
 }
@@ -2106,7 +2258,8 @@ final class ShortcutRecorderController: NSWindowController, NSWindowDelegate {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    var panel: NotesPanel!
+    var panel: LegacyNotesPanel!
+    var notesCoordinator: NotesCoordinator!
     var statusItem: NSStatusItem?
     var hotKeyRef: EventHotKeyRef?
     var captureHotKeyRef: EventHotKeyRef?
@@ -2114,10 +2267,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var openingShortcut = OpeningShortcut.saved
     var openingShortcutsEnabled = true
     var shortcutRecorderController: ShortcutRecorderController?
+    var accessibilityGuide: AccessibilityGuideWindowController?
     var availableUpdateTitle: String?
     var menuBarShownForShortcutPause = false
     var placed = false
     var lastShiftTap: TimeInterval = 0
+    var lastToggleFromDoubleTap: TimeInterval = 0
     var shiftWasDown = false
 
     var isMenuBarVisible: Bool { statusItem != nil }
@@ -2148,7 +2303,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        panel = NotesPanel(
+        notesCoordinator = NotesCoordinator()
+        let notesWindow = NotesWindowController(coordinator: notesCoordinator)
+        notesCoordinator.attach(window: notesWindow)
+        panel = LegacyNotesPanel(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 480),
             styleMask: [.borderless, .nonactivatingPanel, .resizable],
             backing: .buffered, defer: false)
@@ -2372,7 +2530,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     var autoUpdateEnabled: Bool {
-        UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true
+        if let saved = UserDefaults.standard.object(forKey: "autoUpdate") as? Bool { return saved }
+        // Release installs live in /Applications; ~/Applications is the local
+        // development install and must never update itself in the background.
+        return Bundle.main.bundlePath.hasPrefix("/Applications/")
     }
 
     @objc func toggleAutoUpdate(_ sender: NSMenuItem) {
@@ -2386,6 +2547,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func checkForUpdates() {
+        guard autoUpdateEnabled, Bundle.main.bundlePath.hasPrefix("/Applications/") else { return }
         guard let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
               let url = URL(string: "https://api.github.com/repos/connect-kai/noot/releases/latest")
         else { return }
@@ -2520,13 +2682,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // double-tap command toggles the panel; the global monitor needs Accessibility permission.
     // Never auto-prompt — the per-launch AX dialog is hostile; the menu item handles granting.
     func installDoubleShift() {
-        NSLog("accessibility trusted: \(AXIsProcessTrusted())")
+        // Accessibility is optional. Never prompt or open an onboarding window at launch;
+        // the regular ⌥⌘N Carbon shortcut works without it.
+        let trusted = AXIsProcessTrusted()
+        NSLog("accessibility trusted: \(trusted)")
         NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] e in
             self?.handleShiftTap(e)
         }
         NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] e in
             self?.handleShiftTap(e)
             return e
+        }
+    }
+
+    func showAccessibilityGuide() {
+        guard !UserDefaults.standard.bool(forKey: "accessibilityGuideDismissed") else { return }
+        MainActor.assumeIsolated {
+            if accessibilityGuide == nil {
+                accessibilityGuide = AccessibilityGuideWindowController { [weak self] in
+                    UserDefaults.standard.set(true, forKey: "accessibilityGuideDismissed")
+                    self?.accessibilityGuide?.dismiss()
+                }
+            }
+            accessibilityGuide?.present()
         }
     }
 
@@ -2543,6 +2721,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if !shiftWasDown {
                 if e.timestamp - lastShiftTap < 0.35 {
                     lastShiftTap = 0
+                    // Global and local monitors both receive an in-app flagsChanged
+                    // event. Treat their duplicate callback as one gesture.
+                    guard e.timestamp - lastToggleFromDoubleTap > 0.45 else { return }
+                    lastToggleFromDoubleTap = e.timestamp
                     DispatchQueue.main.async { self.toggle(atMouse: true) }
                 } else {
                     lastShiftTap = e.timestamp
@@ -2559,6 +2741,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let main = NSMenu()
         let holder = NSMenuItem()
         main.addItem(holder)
+        let quit = NSMenuItem(
+            title: "Quit Noot", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
+        main.addItem(quit)
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
         edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
@@ -2786,7 +2972,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func showDaily() {
         NotesStore.shared.openDaily()
-        if !panel.isVisible { togglePanel() } else { focusEditor() }
+        MainActor.assumeIsolated {
+            if !notesCoordinator.isVisible { togglePanel() } else { notesCoordinator.show() }
+        }
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -2815,22 +3003,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func togglePanel() { toggle(atMouse: false) }
 
     func toggle(atMouse: Bool) {
-        if panel.isVisible && panel.isKeyWindow {
-            panel.orderOut(nil)
-            return
+        MainActor.assumeIsolated {
+            if notesCoordinator.isVisible { notesCoordinator.hide(); return }
+            notesCoordinator.show(atMouse: atMouse)
         }
-        if atMouse {
-            moveToMouse()
-            placed = true
-        } else if !placed, let screen = NSScreen.main {
-            let f = screen.visibleFrame
-            let s = panel.frame.size
-            panel.setFrameOrigin(NSPoint(x: f.midX - s.width / 2,
-                                         y: f.midY - s.height / 2 + f.height * 0.12))
-            placed = true
-        }
-        panel.makeKeyAndOrderFront(nil)
-        focusEditor()
     }
 
     // pop up under the cursor, clamped to that screen's visible area
@@ -2847,7 +3023,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 }
 
 let app = NSApplication.shared
-let delegate = AppDelegate()
+let delegate = MainActor.assumeIsolated { AppDelegate() }
 app.delegate = delegate
 app.setActivationPolicy(.accessory)
 app.run()
