@@ -2274,6 +2274,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastShiftTap: TimeInterval = 0
     var lastToggleFromDoubleTap: TimeInterval = 0
     var shiftWasDown = false
+    private let globalDoubleTapMonitor = GlobalDoubleTapMonitor()
+    private var localDoubleTapMonitor: Any?
+    private var doubleTapPermissionTimer: Timer?
 
     var isMenuBarVisible: Bool { statusItem != nil }
 
@@ -2342,6 +2345,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { [weak self] _ in
             self?.checkForUpdates()
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        doubleTapPermissionTimer?.invalidate()
+        if let localDoubleTapMonitor { NSEvent.removeMonitor(localDoubleTapMonitor) }
+        globalDoubleTapMonitor.stop()
     }
 
     func setMenuBarVisible(_ visible: Bool, persist: Bool = true) {
@@ -2485,6 +2494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         UserDefaults.standard.set(id, forKey: "doubleTapModifier")
         lastShiftTap = 0 // drop any half-finished tap on the old modifier
         shiftWasDown = false
+        refreshDoubleTapMonitor()
         sender.menu?.items.forEach { $0.state = ($0.representedObject as? String) == id ? .on : .off }
         updateShortcutMenu()
     }
@@ -2679,19 +2689,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    // double-tap command toggles the panel; the global monitor needs Accessibility permission.
-    // Never auto-prompt — the per-launch AX dialog is hostile; the menu item handles granting.
+    // Global keyboard monitoring is optional and must never request permission.
     func installDoubleShift() {
-        // Accessibility is optional. Never prompt or open an onboarding window at launch;
-        // the regular ⌥⌘N Carbon shortcut works without it.
-        let trusted = AXIsProcessTrusted()
-        NSLog("accessibility trusted: \(trusted)")
-        NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] e in
-            self?.handleShiftTap(e)
-        }
-        NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] e in
+        guard localDoubleTapMonitor == nil else { return }
+        localDoubleTapMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] e in
             self?.handleShiftTap(e)
             return e
+        }
+        refreshDoubleTapMonitor()
+        // Silently notice grants/revocations in System Settings, even while Noot
+        // stays in the background. Never retry registration while untrusted.
+        doubleTapPermissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.refreshDoubleTapMonitor()
+        }
+    }
+
+    func refreshDoubleTapMonitor() {
+        globalDoubleTapMonitor.refresh(enabled: openingShortcutsEnabled && doubleTapChoice.flag != nil) { [weak self] e in
+            self?.handleShiftTap(e)
         }
     }
 
@@ -2945,6 +2960,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
+        refreshDoubleTapMonitor()
         updateShortcutMenu()
     }
 

@@ -49,9 +49,18 @@ cd noot
 open ~/Applications/Noot.app
 ```
 
-Grant the one permission macOS asks for:
+Accessibility permission is optional and Noot does not request it at launch:
 
 - **Accessibility** — needed for the global double-tap (System Settings → Privacy & Security → Accessibility). ⌥⌘N works without it.
+
+Use “Enable ⌘⌘ (Accessibility)…” in Noot's menu to open the settings. Global
+double-tap starts after access is granted and stops when access is revoked.
+
+The app is ad-hoc signed, so an update or local rebuild can invalidate an earlier
+Accessibility grant. If double-tap only works inside Noot, quit Noot, remove its
+old entry from Accessibility, add `/Applications/Noot.app` (or
+`~/Applications/Noot.app` for a source build), and enable it again. Then reopen
+Noot. Use the same app copy when granting access and launching it.
 
 ## Keys
 
