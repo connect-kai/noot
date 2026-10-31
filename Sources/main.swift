@@ -2275,9 +2275,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastToggleFromDoubleTap: TimeInterval = 0
     var shiftWasDown = false
     /// Local and global monitors can both report the same in-app modifier event.
-    /// Keep the last event identity so the two callbacks cannot advance the
-    /// detector twice or race its state from different event-monitor threads.
-    private var lastModifierEventNumber: Int = 0
+    /// Keep its timestamp so the two callbacks cannot advance the detector
+    /// twice or race its state from different event-monitor threads.
     private var lastModifierEventTimestamp: TimeInterval = 0
     private let globalDoubleTapMonitor = GlobalDoubleTapMonitor()
     private var localDoubleTapMonitor: Any?
@@ -2741,12 +2740,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // When Noot is frontmost, both the local and global monitor may receive
         // a copy of one flagsChanged event. Ignore the second copy entirely so
         // it cannot undo the first copy's shiftWasDown transition.
-        if e.eventNumber != 0 {
-            guard e.eventNumber != lastModifierEventNumber
-                || e.timestamp != lastModifierEventTimestamp else { return }
-            lastModifierEventNumber = e.eventNumber
-            lastModifierEventTimestamp = e.timestamp
-        } else if e.timestamp != 0 {
+        if e.timestamp != 0 {
             guard e.timestamp != lastModifierEventTimestamp else { return }
             lastModifierEventTimestamp = e.timestamp
         }
