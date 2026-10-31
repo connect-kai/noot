@@ -2274,6 +2274,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastShiftTap: TimeInterval = 0
     var lastToggleFromDoubleTap: TimeInterval = 0
     var shiftWasDown = false
+    /// Local and global monitors can both report the same in-app modifier event.
+    /// Keep the last event identity so the two callbacks cannot advance the
+    /// detector twice or race its state from different event-monitor threads.
+    private var lastModifierEventNumber: Int = 0
+    private var lastModifierEventTimestamp: TimeInterval = 0
     private let globalDoubleTapMonitor = GlobalDoubleTapMonitor()
     private var localDoubleTapMonitor: Any?
     private var doubleTapPermissionTimer: Timer?
@@ -2693,7 +2698,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func installDoubleShift() {
         guard localDoubleTapMonitor == nil else { return }
         localDoubleTapMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] e in
-            self?.handleShiftTap(e)
+            self?.enqueueShiftTap(e)
             return e
         }
         refreshDoubleTapMonitor()
@@ -2706,7 +2711,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func refreshDoubleTapMonitor() {
         globalDoubleTapMonitor.refresh(enabled: openingShortcutsEnabled && doubleTapChoice.flag != nil) { [weak self] e in
-            self?.handleShiftTap(e)
+            self?.enqueueShiftTap(e)
         }
     }
 
@@ -2723,7 +2728,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Monitor callbacks are not guaranteed to share the app's main thread.
+    /// Queue both sources before touching the detector state; this also keeps
+    /// the local monitor lightweight while an editor is handling input.
+    private func enqueueShiftTap(_ e: NSEvent) {
+        DispatchQueue.main.async { [weak self] in
+            self?.handleShiftTap(e)
+        }
+    }
+
     func handleShiftTap(_ e: NSEvent) {
+        // When Noot is frontmost, both the local and global monitor may receive
+        // a copy of one flagsChanged event. Ignore the second copy entirely so
+        // it cannot undo the first copy's shiftWasDown transition.
+        if e.eventNumber != 0 {
+            guard e.eventNumber != lastModifierEventNumber
+                || e.timestamp != lastModifierEventTimestamp else { return }
+            lastModifierEventNumber = e.eventNumber
+            lastModifierEventTimestamp = e.timestamp
+        } else if e.timestamp != 0 {
+            guard e.timestamp != lastModifierEventTimestamp else { return }
+            lastModifierEventTimestamp = e.timestamp
+        }
+
         guard openingShortcutsEnabled else {
             lastShiftTap = 0
             shiftWasDown = false
@@ -2736,8 +2763,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if !shiftWasDown {
                 if e.timestamp - lastShiftTap < 0.35 {
                     lastShiftTap = 0
-                    // Global and local monitors both receive an in-app flagsChanged
-                    // event. Treat their duplicate callback as one gesture.
+                    // Keep a short debounce as a fallback for monitor events that
+                    // do not expose an event identity.
                     guard e.timestamp - lastToggleFromDoubleTap > 0.45 else { return }
                     lastToggleFromDoubleTap = e.timestamp
                     DispatchQueue.main.async { self.toggle(atMouse: true) }
